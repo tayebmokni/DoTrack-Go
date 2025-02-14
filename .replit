@@ -28,7 +28,6 @@ task = "packager.installForAll"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "go run cmd/server/main.go"
-waitForPort = 8000
 
 [deployment]
 run = ["sh", "-c", "go run cmd/server/main.go"]

@@ -15,6 +15,10 @@ func NewRouter(
 	// Initialize handlers
 	deviceHandler := handler.NewDeviceHandler(deviceService)
 	positionHandler := handler.NewPositionHandler(positionService)
+	authHandler := handler.NewAuthHandler()
+
+	// Initialize middleware
+	authMiddleware := middleware.NewAuthMiddleware()
 
 	// Create router
 	mux := http.NewServeMux()
@@ -23,30 +27,34 @@ func NewRouter(
 	withMiddleware := func(handler http.Handler) http.Handler {
 		return middleware.CORSMiddleware(
 			middleware.LoggingMiddleware(
-				handler,
+				authMiddleware.Authenticate(
+					handler,
+				),
 			),
 		)
 	}
 
-	// Test endpoint
-	mux.Handle("/test", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
-			"message": "API is working correctly",
-		})
-	})))
+	// Health check endpoint (no auth required)
+	mux.Handle("/health", middleware.CORSMiddleware(
+		middleware.LoggingMiddleware(
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]string{
+					"status":   "ok",
+					"database": "connected",
+				})
+			}),
+		),
+	))
 
-	// Health check endpoint
-	mux.Handle("/health", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":   "ok",
-			"database": "connected",
-		})
-	})))
+	// Test login endpoint (unprotected)
+	mux.Handle("/api/auth/test-login", middleware.CORSMiddleware(
+		middleware.LoggingMiddleware(
+			http.HandlerFunc(authHandler.TestLogin),
+		),
+	))
 
-	// Device routes with method handling
+	// Protected routes
 	mux.Handle("/api/devices", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -74,7 +82,7 @@ func NewRouter(
 		deviceHandler.GetDevice(w, r)
 	})))
 
-	// Position routes - with device validation in service layer
+	// Position routes with authentication
 	mux.Handle("/api/positions", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:

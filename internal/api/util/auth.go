@@ -1,9 +1,9 @@
 package util
 
 import (
+	"context"
 	"errors"
 	"net/http"
-	"strings"
 )
 
 type UserClaims struct {
@@ -13,31 +13,21 @@ type UserClaims struct {
 	OrganizationID string `json:"organization_id,omitempty"`
 }
 
-// GetUserClaims extracts all user claims from the JWT token
+type contextKey string
+
+const userClaimsKey contextKey = "userClaims"
+
+// WithUserClaims adds UserClaims to the context
+func WithUserClaims(ctx context.Context, claims *UserClaims) context.Context {
+	return context.WithValue(ctx, userClaimsKey, claims)
+}
+
+// GetUserClaims extracts UserClaims from the context
 func GetUserClaims(r *http.Request) (*UserClaims, error) {
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		return nil, errors.New("no authorization header")
+	claims, ok := r.Context().Value(userClaimsKey).(*UserClaims)
+	if !ok {
+		return nil, errors.New("no user claims found in context")
 	}
-
-	// Extract the token from the "Bearer <token>" format
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		return nil, errors.New("invalid authorization header format")
-	}
-
-	// Note: Token validation is handled by external auth service
-	// Here we just extract the claims assuming the token is valid
-
-	// For development/testing, we'll extract user info from token
-	// In production, these would be properly decoded from the JWT
-	token := parts[1]
-
-	// Extract user ID from token subject claim
-	claims := &UserClaims{
-		UserID: token, // In production, this would be decoded from JWT
-	}
-
 	return claims, nil
 }
 
@@ -61,6 +51,6 @@ func CanAccessOrganization(userRole string, userOrgID, targetOrgID string) bool 
 		return false
 	}
 
-	return userOrgID == targetOrgID && 
+	return userOrgID == targetOrgID &&
 		(IsOrganizationAdmin(userRole) || userRole == "organization_member")
 }
