@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 
@@ -11,8 +12,15 @@ import (
 )
 
 func main() {
-	// Load MongoDB configuration
+	// Load configurations
+	cfg := config.LoadConfig()
 	mongoConfig := config.NewMongoConfig()
+
+	// Log startup information
+	log.Printf("Starting server with configuration:")
+	log.Printf("Host: %s", cfg.Host)
+	log.Printf("Port: %s", cfg.Port)
+	log.Printf("Base URL: %s", cfg.BaseURL)
 
 	// Connect to MongoDB
 	db, err := config.ConnectMongoDB(mongoConfig)
@@ -22,7 +30,7 @@ func main() {
 
 	log.Printf("Connected to MongoDB database: %s", mongoConfig.Database)
 
-	// Initialize repositories with MongoDB
+	// Initialize repositories
 	deviceRepo := repository.NewMongoDeviceRepository(db)
 	positionRepo := repository.NewMongoPositionRepository(db)
 
@@ -34,9 +42,9 @@ func main() {
 	r := router.NewRouter(deviceService, positionService)
 
 	// Start server
-	port := ":8000"
-	log.Printf("Server starting on %s", port)
-	if err := http.ListenAndServe(port, r); err != nil {
+	addr := fmt.Sprintf("%s:%s", cfg.Host, cfg.Port)
+	log.Printf("Server starting on %s", addr)
+	if err := http.ListenAndServe(addr, r); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
