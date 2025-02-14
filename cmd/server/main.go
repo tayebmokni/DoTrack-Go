@@ -20,6 +20,8 @@ func main() {
 		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
 
+	log.Printf("Connected to MongoDB database: %s", mongoConfig.Database)
+
 	// Initialize repositories with MongoDB
 	deviceRepo := repository.NewMongoDeviceRepository(db)
 	positionRepo := repository.NewMongoPositionRepository(db)
@@ -32,8 +34,9 @@ func main() {
 	r := router.NewRouter(deviceService, positionService)
 
 	// Start server
-	log.Printf("Server starting on :8000")
-	if err := http.ListenAndServe(":8000", r); err != nil {
+	port := ":8000"
+	log.Printf("Server starting on %s", port)
+	if err := http.ListenAndServe(port, r); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
