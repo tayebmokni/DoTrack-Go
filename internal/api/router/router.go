@@ -30,7 +30,7 @@ func NewRouter(
 	mux.Handle("/test", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "ok",
+			"status":  "ok",
 			"message": "API is working correctly",
 		})
 	})))
@@ -39,7 +39,7 @@ func NewRouter(
 	mux.Handle("/health", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]string{
-			"status": "ok",
+			"status":   "ok",
 			"database": "connected",
 		})
 	})))
@@ -72,7 +72,7 @@ func NewRouter(
 		deviceHandler.GetDevice(w, r)
 	})))
 
-	// Position routes
+	// Position routes - with device validation in service layer
 	mux.Handle("/api/positions", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:
@@ -100,7 +100,6 @@ func NewRouter(
 		positionHandler.GetLatestPosition(w, r)
 	})))
 
-	// Add the raw data endpoint
 	mux.Handle("/api/positions/raw", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodPost:

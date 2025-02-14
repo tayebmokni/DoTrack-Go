@@ -33,10 +33,11 @@ func main() {
 	// Initialize repositories
 	deviceRepo := repository.NewMongoDeviceRepository(db)
 	positionRepo := repository.NewMongoPositionRepository(db)
+	orgMemberRepo := repository.NewMongoOrganizationMemberRepository(db)
 
 	// Initialize services
-	deviceService := service.NewDeviceService(deviceRepo)
-	positionService := service.NewPositionService(positionRepo)
+	deviceService := service.NewDeviceService(deviceRepo, orgMemberRepo)
+	positionService := service.NewPositionService(positionRepo, deviceRepo)
 
 	// Initialize router
 	r := router.NewRouter(deviceService, positionService)

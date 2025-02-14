@@ -17,8 +17,10 @@ func NewDeviceHandler(deviceService service.DeviceService) *DeviceHandler {
 }
 
 type createDeviceRequest struct {
-	Name     string `json:"name"`
-	UniqueID string `json:"uniqueId"`
+	Name           string `json:"name"`
+	UniqueID       string `json:"uniqueId"`
+	UserID         string `json:"userId,omitempty"`
+	OrganizationID string `json:"organizationId,omitempty"`
 }
 
 func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -28,7 +30,10 @@ func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	device, err := h.deviceService.CreateDevice(req.Name, req.UniqueID)
+	// Get user ID from context (set by auth middleware)
+	userID := r.Context().Value("userID").(string)
+
+	device, err := h.deviceService.CreateDevice(req.Name, req.UniqueID, userID, req.OrganizationID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -39,7 +44,21 @@ func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DeviceHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
-	devices, err := h.deviceService.GetAllDevices()
+	// Get user ID from context
+	userID := r.Context().Value("userID").(string)
+
+	// Get organization ID from query parameters
+	orgID := r.URL.Query().Get("organizationId")
+
+	var devices interface{}
+	var err error
+
+	if orgID != "" {
+		devices, err = h.deviceService.GetOrganizationDevices(orgID)
+	} else {
+		devices, err = h.deviceService.GetUserDevices(userID)
+	}
+
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -53,6 +72,15 @@ func (h *DeviceHandler) GetDevice(w http.ResponseWriter, r *http.Request) {
 	deviceID := r.URL.Query().Get("id")
 	if deviceID == "" {
 		http.Error(w, "Device ID required", http.StatusBadRequest)
+		return
+	}
+
+	// Get user ID from context
+	userID := r.Context().Value("userID").(string)
+
+	// Validate user has access to this device
+	if err := h.deviceService.ValidateDeviceAccess(deviceID, userID); err != nil {
+		http.Error(w, "Unauthorized access to device", http.StatusUnauthorized)
 		return
 	}
 

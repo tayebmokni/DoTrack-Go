@@ -30,7 +30,10 @@ func (h *PositionHandler) AddPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	position, err := h.positionService.AddPosition(req.DeviceID, req.Latitude, req.Longitude)
+	// Get user ID from context
+	userID := r.Context().Value("userID").(string)
+
+	position, err := h.positionService.AddPosition(req.DeviceID, req.Latitude, req.Longitude, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -47,7 +50,10 @@ func (h *PositionHandler) GetPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	positions, err := h.positionService.GetDevicePositions(deviceID)
+	// Get user ID from context
+	userID := r.Context().Value("userID").(string)
+
+	positions, err := h.positionService.GetDevicePositions(deviceID, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -64,7 +70,10 @@ func (h *PositionHandler) GetLatestPosition(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	position, err := h.positionService.GetLatestPosition(deviceID)
+	// Get user ID from context
+	userID := r.Context().Value("userID").(string)
+
+	position, err := h.positionService.GetLatestPosition(deviceID, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -91,6 +100,9 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Get user ID from context
+	userID := r.Context().Value("userID").(string)
+
 	// Decode base64 data
 	rawData, err := base64.StdEncoding.DecodeString(req.RawData)
 	if err != nil {
@@ -98,7 +110,7 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	position, err := h.positionService.ProcessRawData(req.DeviceID, rawData)
+	position, err := h.positionService.ProcessRawData(req.DeviceID, rawData, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
