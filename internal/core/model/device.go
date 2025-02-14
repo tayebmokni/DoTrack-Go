@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"time"
+	"tracking/internal/core/util"
 )
 
 type Device struct {
@@ -26,7 +27,7 @@ func NewDevice(name, uniqueID string) *Device {
 	apiSecret, _ := generateRandomKey(32)
 
 	return &Device{
-		ID:         GenerateID(),
+		ID:         util.GenerateID(),
 		Name:       name,
 		UniqueID:   uniqueID,
 		Status:     "inactive",
@@ -41,10 +42,6 @@ func NewDevice(name, uniqueID string) *Device {
 func (d *Device) SetOwnership(userID, organizationID string) {
 	d.UserID = userID
 	d.OrganizationID = organizationID
-}
-
-func GenerateID() string {
-	return time.Now().Format("20060102150405")
 }
 
 func generateRandomKey(length int) (string, error) {

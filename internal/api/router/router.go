@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"tracking/internal/api/handler"
 	"tracking/internal/api/middleware"
@@ -23,14 +24,17 @@ func NewRouter(
 	// Create router
 	mux := http.NewServeMux()
 
-	// Add middleware chain
+	// Add middleware chain with logging
 	withMiddleware := func(handler http.Handler) http.Handler {
 		return middleware.CORSMiddleware(
-			middleware.LoggingMiddleware(
-				authMiddleware.Authenticate(
-					handler,
-				),
-			),
+			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Printf("Request received: %s %s\n", r.Method, r.URL.Path)
+				middleware.LoggingMiddleware(
+					authMiddleware.Authenticate(
+						handler,
+					),
+				).ServeHTTP(w, r)
+			}),
 		)
 	}
 
@@ -111,6 +115,7 @@ func NewRouter(
 	})))
 
 	mux.Handle("/api/positions/raw", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Printf("Raw position endpoint hit: %s %s\n", r.Method, r.URL.Path)
 		switch r.Method {
 		case http.MethodPost:
 			positionHandler.ProcessRawData(w, r)

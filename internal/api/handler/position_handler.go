@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"tracking/internal/api/util"
 	"tracking/internal/core/service"
@@ -104,14 +105,19 @@ func (h *PositionHandler) GetLatestPosition(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request) {
+	// Add debug logging
+	fmt.Printf("Received raw data request: %s %s\n", r.Method, r.URL.Path)
+
 	var req rawDataRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fmt.Printf("Error decoding request body: %v\n", err)
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
 	claims, err := util.GetUserClaims(r)
 	if err != nil {
+		fmt.Printf("Error getting user claims: %v\n", err)
 		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
@@ -119,12 +125,15 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 	// Decode base64 data
 	rawData, err := base64.StdEncoding.DecodeString(req.RawData)
 	if err != nil {
+		fmt.Printf("Error decoding base64 data: %v\n", err)
 		http.Error(w, "Invalid raw data format", http.StatusBadRequest)
 		return
 	}
 
+	fmt.Printf("Processing raw data for device: %s, data length: %d bytes\n", req.DeviceID, len(rawData))
 	position, err := h.positionService.ProcessRawData(req.DeviceID, rawData, claims.UserID)
 	if err != nil {
+		fmt.Printf("Error processing raw data: %v\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
