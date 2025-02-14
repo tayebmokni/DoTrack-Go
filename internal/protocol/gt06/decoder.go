@@ -89,7 +89,7 @@ const (
 	overspeedAlarm  = 0x40
 )
 
-// Update packet length validation in GT06 decoder
+// Fix packet length calculation and checksum validation
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode...")
 	d.logPacket(data, "Received")
@@ -106,22 +106,20 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 			ErrInvalidHeader, startByte1, startByte2, data[0], data[1])
 	}
 
-	// Get stated packet length from third byte
+	// Get packet length (includes protocol number and payload, excludes length byte itself)
 	packetLength := int(data[2])
-	d.logDebug("Stated packet length: %d", packetLength)
+	d.logDebug("Packet length: %d", packetLength)
+
+	// Calculate total expected length
+	expectedLength := 2 + 1 + packetLength + 2 + 2 // start(2) + len(1) + payload(n) + crc(2) + end(2)
+	if len(data) != expectedLength {
+		return nil, fmt.Errorf("%w: payload=%d, total=%d, expected=%d",
+			ErrInvalidLength, packetLength, len(data), expectedLength)
+	}
 
 	// Get protocol number
 	protocolNumber := data[3]
 	d.logDebug("Protocol number: 0x%02x", protocolNumber)
-
-	// Calculate expected total length (including start, length, and end bytes)
-	expectedLength := packetLength + 5 // start(2) + length(1) + end(2)
-
-	// Validate total packet length
-	if len(data) != expectedLength {
-		return nil, fmt.Errorf("%w: stated length=%d, actual=%d, expected total=%d",
-			ErrInvalidLength, packetLength, len(data), expectedLength)
-	}
 
 	// Validate protocol number
 	switch protocolNumber {
@@ -131,12 +129,17 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
+	// Extract payload (excluding start, length, and protocol)
+	payloadStart := 4 // After start(2) + len(1) + protocol(1)
+	payloadEnd := len(data) - 4 // Before crc(2) + end(2)
+	payload := data[payloadStart:payloadEnd]
+
 	// Calculate and verify checksum
-	checksum := d.calculateChecksum(data[3:packetLength+3])
-	packetChecksum := uint16(data[packetLength+3])<<8 | uint16(data[packetLength+4])
-	if checksum != packetChecksum {
+	calculatedChecksum := calculateChecksum(data[2:payloadEnd]) // Include length byte in checksum
+	packetChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
+	if calculatedChecksum != packetChecksum {
 		return nil, fmt.Errorf("%w: calculated=0x%04x, received=0x%04x",
-			ErrInvalidChecksum, checksum, packetChecksum)
+			ErrInvalidChecksum, calculatedChecksum, packetChecksum)
 	}
 
 	// Verify end bytes
@@ -146,7 +149,6 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	}
 
 	// Process packet based on protocol number
-	payload := data[3:packetLength+3]
 	var result *GT06Data
 	var err error
 
@@ -169,14 +171,10 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 		return nil, fmt.Errorf("error decoding message type 0x%02x: %w", protocolNumber, err)
 	}
 
-	if result != nil {
-		d.logDebug("Successfully decoded packet: %+v", result)
-	}
-
 	return result, nil
 }
 
-func (d *Decoder) calculateChecksum(data []byte) uint16 {
+func calculateChecksum(data []byte) uint16 {
 	var checksum uint16
 	for _, b := range data {
 		checksum ^= uint16(b)
@@ -335,16 +333,18 @@ func calculateCRC(data []byte) uint16 {
 
 func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 	// Alarm message contains location data followed by alarm type
-	locationData, err := d.decodeLocationMessage(data)
+	// Length should be at least location data (12 bytes) + alarm type (1 byte)
+	if len(data) < 13 {
+		return nil, fmt.Errorf("alarm message too short: need 13 bytes, got %d", len(data))
+	}
+
+	// Location data is all bytes except the last one (alarm type)
+	locationData, err := d.decodeLocationMessage(data[:len(data)-1])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode location data in alarm message: %w", err)
 	}
 
 	// Last byte is alarm type
-	if len(data) < len(data)-1 {
-		return nil, fmt.Errorf("alarm message too short")
-	}
-
 	alarmType := data[len(data)-1]
 	switch alarmType {
 	case sosAlarm:
@@ -365,7 +365,7 @@ func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
 	}
 
-	// Add alarm status
+	// Add alarm to status map
 	if locationData.Status == nil {
 		locationData.Status = make(map[string]interface{})
 	}
