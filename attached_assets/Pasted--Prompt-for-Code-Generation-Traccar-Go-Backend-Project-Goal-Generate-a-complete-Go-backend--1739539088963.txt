@@ -1,0 +1,60 @@
+## Prompt for Code Generation: Traccar Go Backend
+
+**Project Goal:** Generate a complete Go backend for the Traccar GPS tracking platform, replicating its core functionality and supporting a wide range of GPS devices.  The backend should follow a clean architecture, be well-documented, and include comprehensive tests.
+
+**High-Level Requirements:**
+
+*   Implement the backend in Go, adhering to best practices for code structure, readability, and maintainability.
+*   Support all major Traccar features, including device management, position tracking, user management, geofencing, reports, and notifications.
+*   Handle communication with a variety of GPS tracking devices through different protocols.  Start with Teltonika, GT06, and H02 protocols, but the architecture should be extensible to support others.
+*   Use a relational database (PostgreSQL preferred) for data persistence.
+*   Provide a RESTful API for client applications to interact with the backend.
+*   Include comprehensive unit and integration tests to ensure code quality and correctness.
+*   Document the code thoroughly, including API documentation.
+
+**Detailed Breakdown:**
+
+1.  **Project Setup:**
+    *   Initialize a Go module.
+    *   Create a well-structured directory layout (e.g., `cmd`, `internal`, `pkg`).
+    *   Set up version control (Git).
+
+2.  **Data Models (internal/core/model):**
+    *   Define Go structs for all relevant Traccar entities: `Device`, `Position`, `User`, `Geofence`, `Group`, `Driver`, `Event`, etc.  Include all necessary fields and relationships.
+
+3.  **Device Protocol Handling (internal/protocol):**
+    *   Implement decoders for Teltonika, GT06, and H02 protocols.  These decoders should parse raw data from devices and convert it into `Position` structs.
+    *   Design the protocol handling to be extensible, allowing easy addition of new protocols in the future.
+
+4.  **Data Access Layer (internal/core/repository):**
+    *   Define interfaces for repositories (e.g., `DeviceRepository`, `PositionRepository`).
+    *   Implement these repositories using PostgreSQL.  Use appropriate database drivers and connection pooling.
+    *   Write unit tests for all repositories.
+
+5.  **Service Layer (internal/core/service):**
+    *   Define interfaces for services (e.g., `DeviceService`, `PositionService`).
+    *   Implement the business logic of Traccar in these services.
+    *   Write unit tests for all services.
+
+6.  **API Endpoints (cmd/server/main.go):**
+    *   Use a Go web framework (e.g., `gin`, `echo`) to create RESTful API endpoints.
+    *   Implement endpoints for all Traccar functionalities.
+    *   Implement authentication and authorization.
+
+7.  **Database Setup:**
+    *   Provide a script or instructions for setting up the PostgreSQL database schema.
+
+8.  **Testing:**
+    *   Write comprehensive unit tests for all components (models, repositories, services, API endpoints).
+    *   Write integration tests to cover end-to-end flows.
+
+9.  **Documentation:**
+    *   Generate API documentation using a tool like Swagger or go-swagger.
+    *   Include clear comments in the code.
+
+10. **Configuration:**
+    *   Implement a mechanism for loading configuration from a file or environment variables.
+
+**Output:**
+
+Generate all the necessary Go files, including the code for the data models, protocol handling, repositories, services, API endpoints, tests, and documentation.  Provide clear instructions on how to run the backend and set up the database.  The generated code should be well-structured, readable, and follow Go best practices.  It should be ready to be compiled and run with minimal modifications.
