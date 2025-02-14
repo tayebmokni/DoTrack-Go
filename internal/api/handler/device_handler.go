@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"tracking/internal/api/util"
 	"tracking/internal/core/service"
 )
 
@@ -23,6 +24,7 @@ type createDeviceRequest struct {
 	OrganizationID string `json:"organizationId,omitempty"`
 }
 
+
 func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var req createDeviceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -30,10 +32,10 @@ func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user ID from context
-	userID, ok := r.Context().Value("user_id").(string)
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	// Get user ID from JWT token
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
 
@@ -48,17 +50,15 @@ func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DeviceHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
-	userID, ok := r.Context().Value("user_id").(string)
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
 
 	orgID := r.URL.Query().Get("organizationId")
 
 	var devices interface{}
-	var err error
-
 	if orgID != "" {
 		devices, err = h.deviceService.GetOrganizationDevices(orgID)
 	} else {
@@ -81,8 +81,11 @@ func (h *DeviceHandler) GetDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user ID from context
-	userID := r.Context().Value("userID").(string)
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
+		return
+	}
 
 	// Validate user has access to this device
 	if err := h.deviceService.ValidateDeviceAccess(deviceID, userID); err != nil {

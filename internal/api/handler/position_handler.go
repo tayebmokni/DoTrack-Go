@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"tracking/internal/api/util"
 	"tracking/internal/core/service"
 )
 
@@ -23,6 +24,11 @@ type addPositionRequest struct {
 	Longitude float64 `json:"longitude"`
 }
 
+type rawDataRequest struct {
+	DeviceID string `json:"deviceId"`
+	RawData  string `json:"rawData"` // Base64 encoded raw data
+}
+
 func (h *PositionHandler) AddPosition(w http.ResponseWriter, r *http.Request) {
 	var req addPositionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -30,8 +36,11 @@ func (h *PositionHandler) AddPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user ID from context
-	userID := r.Context().Value("userID").(string)
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
+		return
+	}
 
 	position, err := h.positionService.AddPosition(req.DeviceID, req.Latitude, req.Longitude, userID)
 	if err != nil {
@@ -50,8 +59,11 @@ func (h *PositionHandler) GetPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user ID from context
-	userID := r.Context().Value("userID").(string)
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
+		return
+	}
 
 	positions, err := h.positionService.GetDevicePositions(deviceID, userID)
 	if err != nil {
@@ -70,8 +82,11 @@ func (h *PositionHandler) GetLatestPosition(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Get user ID from context
-	userID := r.Context().Value("userID").(string)
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
+		return
+	}
 
 	position, err := h.positionService.GetLatestPosition(deviceID, userID)
 	if err != nil {
@@ -88,11 +103,6 @@ func (h *PositionHandler) GetLatestPosition(w http.ResponseWriter, r *http.Reque
 	json.NewEncoder(w).Encode(position)
 }
 
-type rawDataRequest struct {
-	DeviceID string `json:"deviceId"`
-	RawData  string `json:"rawData"` // Base64 encoded raw data
-}
-
 func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request) {
 	var req rawDataRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -100,10 +110,9 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Get user ID from context
-	userID, ok := r.Context().Value("user_id").(string)
-	if !ok {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	userID, err := util.GetUserIDFromToken(r)
+	if err != nil {
+		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
 

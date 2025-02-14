@@ -15,7 +15,6 @@ func NewRouter(
 	// Initialize handlers
 	deviceHandler := handler.NewDeviceHandler(deviceService)
 	positionHandler := handler.NewPositionHandler(positionService)
-	authMiddleware := middleware.NewAuthMiddleware()
 
 	// Create router
 	mux := http.NewServeMux()
@@ -24,7 +23,7 @@ func NewRouter(
 	withMiddleware := func(handler http.Handler) http.Handler {
 		return middleware.CORSMiddleware(
 			middleware.LoggingMiddleware(
-				authMiddleware.Authenticate(handler),
+				handler,
 			),
 		)
 	}
