@@ -48,12 +48,27 @@ type loginResponse struct {
 }
 
 func main() {
-	// First get a test JWT token
-	token, err := getTestToken()
+	// Wait for servers to start
+	fmt.Println("Waiting for servers to start...")
+	time.Sleep(2 * time.Second)
+
+	// Get a test JWT token with retries
+	var token string
+	var err error
+	for i := 0; i < 5; i++ {
+		token, err = getTestToken()
+		if err == nil {
+			break
+		}
+		fmt.Printf("Attempt %d: Failed to get test token, retrying... (%v)\n", i+1, err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
-		fmt.Printf("Error getting test token: %v\n", err)
+		fmt.Printf("Failed to get test token after retries: %v\n", err)
 		return
 	}
+
+	fmt.Println("Successfully obtained test token")
 
 	// Test GT06 protocol
 	fmt.Println("\nTesting GT06 protocol...")
@@ -92,11 +107,19 @@ func testProtocol(deviceID string, packet []byte, token string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	// Send request
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Send request with retries
+	client := &http.Client{Timeout: 5 * time.Second}
+	var resp *http.Response
+	for i := 0; i < 3; i++ {
+		resp, err = client.Do(req)
+		if err == nil {
+			break
+		}
+		fmt.Printf("Attempt %d: Failed to send request, retrying... (%v)\n", i+1, err)
+		time.Sleep(2 * time.Second)
+	}
 	if err != nil {
-		fmt.Printf("Error sending request: %v\n", err)
+		fmt.Printf("Error sending request after retries: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -124,8 +147,9 @@ func getTestToken() (string, error) {
 		return "", fmt.Errorf("error marshaling login request: %v", err)
 	}
 
-	// Send POST request to test login endpoint
-	resp, err := http.Post("http://localhost:8000/api/auth/test-login", "application/json", bytes.NewBuffer(jsonData))
+	// Send POST request to test login endpoint with timeout
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post("http://localhost:8000/api/auth/test-login", "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", fmt.Errorf("error making login request: %v", err)
 	}

@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"go.mongodb.org/mongo-driver/mongo"
+
 	"tracking/internal/api/router"
 	"tracking/internal/cache"
 	"tracking/internal/config"
@@ -28,23 +30,52 @@ func main() {
 	log.Printf("Host: %s", cfg.Host)
 	log.Printf("Port: %s", cfg.Port)
 	log.Printf("Base URL: %s", cfg.BaseURL)
+	log.Printf("Test Mode: %v", cfg.TestMode)
+	log.Printf("MongoDB URI: %s", mongoConfig.URI)
 
 	// Initialize Redis if URL is provided
 	cache.Initialize(cfg.RedisURL)
 	defer cache.Close()
 
-	// Connect to MongoDB
-	db, err := config.ConnectMongoDB(mongoConfig)
-	if err != nil {
-		log.Fatalf("Failed to connect to MongoDB: %v", err)
+	// Connect to MongoDB with retries
+	var db *mongo.Database
+	var err error
+	for i := 0; i < 5; i++ {
+		db, err = config.ConnectMongoDB(mongoConfig)
+		if err == nil {
+			break
+		}
+		log.Printf("Failed to connect to MongoDB (attempt %d/5): %v", i+1, err)
+		if i < 4 {
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		log.Printf("Using in-memory storage for test mode")
+		// For test mode, we can continue without MongoDB
+		if !cfg.TestMode {
+			log.Fatalf("Failed to connect to MongoDB after 5 attempts")
+		}
 	}
 
-	log.Printf("Connected to MongoDB database: %s", mongoConfig.Database)
+	if db != nil {
+		log.Printf("Connected to MongoDB database: %s", mongoConfig.Database)
+	}
 
 	// Initialize repositories
-	deviceRepo := repository.NewMongoDeviceRepository(db)
-	positionRepo := repository.NewMongoPositionRepository(db)
-	orgMemberRepo := repository.NewMongoOrganizationMemberRepository(db)
+	var deviceRepo repository.DeviceRepository
+	var positionRepo repository.PositionRepository
+	var orgMemberRepo repository.OrganizationMemberRepository
+
+	if db != nil {
+		deviceRepo = repository.NewMongoDeviceRepository(db)
+		positionRepo = repository.NewMongoPositionRepository(db)
+		orgMemberRepo = repository.NewMongoOrganizationMemberRepository(db)
+	} else {
+		// Use in-memory repositories for test mode
+		deviceRepo = repository.NewInMemoryDeviceRepository()
+		positionRepo = repository.NewInMemoryPositionRepository()
+		orgMemberRepo = repository.NewInMemoryOrganizationMemberRepository()
+	}
 
 	// Initialize services
 	deviceService := service.NewDeviceService(deviceRepo, orgMemberRepo)
@@ -54,7 +85,7 @@ func main() {
 	r := router.NewRouter(deviceService, positionService)
 
 	// Initialize TCP server
-	tcpServer := server.NewTCPServer(5023) // Standard port for GPS tracking devices
+	tcpServer := server.NewTCPServer(cfg.TCPPort, deviceRepo, positionRepo)
 	if err := tcpServer.Start(); err != nil {
 		log.Fatalf("Failed to start TCP server: %v", err)
 	}

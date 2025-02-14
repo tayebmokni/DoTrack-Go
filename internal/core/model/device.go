@@ -3,6 +3,7 @@ package model
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"time"
 	"tracking/internal/core/util"
 )
@@ -39,6 +40,19 @@ func NewDevice(name, uniqueID string) *Device {
 	}
 }
 
+// NewTestDevice creates a new test device instance
+func NewTestDevice(uniqueID string) *Device {
+	return &Device{
+		ID:         uniqueID,
+		Name:       "Test Device",
+		UniqueID:   uniqueID,
+		Status:     "active",
+		LastUpdate: time.Now(),
+		CreatedAt:  time.Now(),
+		Protocol:   "test",
+	}
+}
+
 func (d *Device) SetOwnership(userID, organizationID string) {
 	d.UserID = userID
 	d.OrganizationID = organizationID
@@ -54,4 +68,9 @@ func generateRandomKey(length int) (string, error) {
 
 func (d *Device) ValidateCredentials(apiKey, apiSecret string) bool {
 	return d.ApiKey == apiKey && d.ApiSecret == apiSecret
+}
+
+// IsTestDevice checks if this is a test device
+func (d *Device) IsTestDevice() bool {
+	return strings.HasPrefix(d.UniqueID, "test-") || strings.HasPrefix(d.UniqueID, "demo-")
 }

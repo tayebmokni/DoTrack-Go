@@ -1,4 +1,4 @@
-modules = ["go", "golang-1.21", "python-3.11"]
+modules = ["go", "golang-1.21", "python-3.11", "go-1.21"]
 
 [nix]
 channel = "stable-24_05"
@@ -31,7 +31,7 @@ task = "packager.installForAll"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "TEST_MODE=true TCP_PORT=5023 go run cmd/server/main.go"
+args = "TEST_MODE=true TCP_PORT=5023 PORT=8000 JWT_ACCESS_SECRET=test_jwt_secret_key_123 MONGODB_URI=mongodb://localhost:27017/tracking go run cmd/server/main.go"
 
 [[workflows.workflow]]
 name = "Protocol Test"
@@ -48,7 +48,11 @@ task = "shell.exec"
 args = "go run cmd/test/test_protocols.go"
 
 [deployment]
-run = ["sh", "-c", "TEST_MODE=true TCP_PORT=5023 go run cmd/server/main.go"]
+run = ["sh", "-c", "TEST_MODE=true TCP_PORT=5023 PORT=8000 JWT_ACCESS_SECRET=test_jwt_secret_key_123 MONGODB_URI=mongodb://localhost:27017/tracking go run cmd/server/main.go"]
+
+[[ports]]
+localPort = 5023
+externalPort = 3000
 
 [[ports]]
 localPort = 8000

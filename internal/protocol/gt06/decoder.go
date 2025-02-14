@@ -35,13 +35,19 @@ const (
 	startByte1 = 0x78
 	startByte2 = 0x78
 	minLength  = 15
-	endByte    = 0x0D0A
+	endByte1   = 0x0D // Split endByte into two constants
+	endByte2   = 0x0A
 
 	// Command types
 	loginMsg    = 0x01
 	locationMsg = 0x12
 	statusMsg   = 0x13
 	alarmMsg    = 0x16
+
+	// Response types
+	loginResp    = 0x05
+	locationResp = 0x13
+	alarmResp    = 0x15
 
 	// Alarm types
 	sosAlarm          = 0x01
@@ -52,6 +58,90 @@ const (
 	lowBatteryAlarm   = 0x20
 	overspeedAlarm    = 0x40
 )
+
+// GenerateResponse generates the appropriate response packet based on the received message type
+func (d *Decoder) GenerateResponse(msgType uint8, deviceID string) []byte {
+	switch msgType {
+	case loginMsg:
+		return d.generateLoginResponse(deviceID)
+	case locationMsg:
+		return d.generateLocationResponse()
+	case alarmMsg:
+		return d.generateAlarmResponse()
+	default:
+		return d.generateLocationResponse() // Default to location response
+	}
+}
+
+func (d *Decoder) generateLoginResponse(deviceID string) []byte {
+	// Login response format:
+	// Start(2) + PackLen(1) + ProtocolNo(1) + DeviceID(n) + Time(2) + SerialNo(2) + Error(2) + CRC(2) + Stop(2)
+	respLen := len(deviceID) + 10 // Add length of fixed fields
+	resp := make([]byte, 0, respLen+5)
+
+	// Start bytes
+	resp = append(resp, startByte1, startByte2)
+
+	// Packet length
+	resp = append(resp, byte(respLen))
+
+	// Protocol number (login response)
+	resp = append(resp, loginResp)
+
+	// Device ID (copy from request)
+	resp = append(resp, []byte(deviceID)...)
+
+	// Current time (UTC)
+	now := time.Now().UTC()
+	resp = append(resp, byte(now.Hour()), byte(now.Minute()))
+
+	// Serial number (0x0001)
+	resp = append(resp, 0x00, 0x01)
+
+	// Error code (0x0000 = success)
+	resp = append(resp, 0x00, 0x00)
+
+	// Calculate CRC
+	crc := calculateCRC(resp[2:])
+	resp = append(resp, byte(crc>>8), byte(crc))
+
+	// End bytes
+	resp = append(resp, endByte1, endByte2)
+
+	return resp
+}
+
+func (d *Decoder) generateLocationResponse() []byte {
+	resp := []byte{
+		startByte1, startByte2, // Start bytes
+		0x05,                   // Packet length
+		locationResp,           // Protocol number (location response)
+		0x00, 0x01,            // Serial number
+		0x00, 0x01,            // CRC
+		endByte1, endByte2,    // End bytes
+	}
+	return resp
+}
+
+func (d *Decoder) generateAlarmResponse() []byte {
+	resp := []byte{
+		startByte1, startByte2, // Start bytes
+		0x05,                   // Packet length
+		alarmResp,              // Protocol number (alarm response)
+		0x00, 0x01,            // Serial number
+		0x00, 0x01,            // CRC
+		endByte1, endByte2,    // End bytes
+	}
+	return resp
+}
+
+func calculateCRC(data []byte) uint16 {
+	var crc uint16
+	for _, b := range data {
+		crc ^= uint16(b)
+	}
+	return crc
+}
 
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	if len(data) < minLength {
@@ -98,7 +188,7 @@ func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error)
 		return nil, err
 	}
 
-	result.GPSValid = (statusByte & 0x01) == 0x01
+	result.GPSValid = (statusByte&0x01) == 0x01
 	result.Satellites = (statusByte >> 2) & 0x0F
 
 	var rawLat, rawLon uint32
