@@ -1,28 +1,3 @@
-// Package gt06 implements the GT06/GT06N GPS tracker protocol decoder
-// Protocol Information:
-// The GT06 protocol uses the following packet structure:
-//   - Start:    2 bytes  (0x78 0x78)
-//   - Length:   1 byte   (payload length)
-//   - Protocol: 1 byte   (message type identifier)
-//   - Payload:  n bytes  (varies by message type)
-//   - Checksum: 2 bytes  (XOR of payload bytes)
-//   - End:      2 bytes  (0x0D 0x0A)
-//
-// Message Types:
-//   0x01: Login Message - Device identification and authentication
-//   0x12: Location Message - GPS position and status information
-//   0x13: Status Message - Device status (power, GSM signal, etc.)
-//   0x16: Alarm Message - Various alerts (SOS, power cut, geofence, etc.)
-//
-// Coordinate Format:
-//   Coordinates are encoded in BCD (Binary Coded Decimal) format
-//   Example: 12°34.5678' is encoded as 0x12345678
-//   - First two digits: Degrees
-//   - Next two digits: Minutes
-//   - Last four digits: Decimal minutes (scaled by 10000)
-//
-// For detailed protocol specification, see the GT06 protocol documentation.
-
 package gt06
 
 import (
@@ -85,11 +60,40 @@ func (d *Decoder) logPacket(data []byte, prefix string) {
 	d.logDebug("%s Packet [%d bytes]:\n        %s", prefix, len(data), hexStr)
 }
 
+// GT06 protocol constants
+const (
+	startByte1 = 0x78
+	startByte2 = 0x78
+	minLength  = 10 // Minimum length: start(2) + length(1) + protocol(1) + checksum(2) + end(2)
+	endByte1   = 0x0D
+	endByte2   = 0x0A
+
+	// Command types
+	loginMsg    = 0x01
+	locationMsg = 0x12
+	statusMsg   = 0x13
+	alarmMsg    = 0x16
+
+	// Response types
+	loginResp    = 0x05
+	locationResp = 0x13
+	alarmResp    = 0x15
+
+	// Alarm types
+	sosAlarm        = 0x01
+	powerCutAlarm   = 0x02
+	vibrationAlarm  = 0x04
+	fenceInAlarm    = 0x10
+	fenceOutAlarm   = 0x11
+	lowBatteryAlarm = 0x20
+	overspeedAlarm  = 0x40
+)
+
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode...")
 	d.logPacket(data, "Received")
 
-	// Validate minimum length (start + length + protocol + checksum + end)
+	// Check minimum length
 	if len(data) < minLength {
 		return nil, fmt.Errorf("%w: got %d bytes, need at least %d",
 			ErrPacketTooShort, len(data), minLength)
@@ -101,16 +105,42 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 			ErrInvalidHeader, startByte1, startByte2, data[0], data[1])
 	}
 
-	// Extract packet length from third byte
+	// Extract stated packet length
 	packetLength := int(data[2])
-	expectedLen := packetLength + 5 // start(2) + length(1) + payload(n) + end(2)
+	d.logDebug("Stated packet length: %d", packetLength)
 
-	if len(data) < expectedLen {
-		return nil, fmt.Errorf("%w: got %d bytes, need %d", ErrPacketTooShort, len(data), expectedLen)
+	// Get protocol number for message type
+	protocolNumber := data[3]
+	d.logDebug("Protocol number: 0x%02x", protocolNumber)
+
+	// Calculate total expected length based on protocol
+	var expectedLength int
+	switch protocolNumber {
+	case loginMsg, locationMsg, statusMsg, alarmMsg:
+		expectedLength = packetLength + 5 // start(2) + length(1) + end(2)
+	default:
+		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
-	if len(data) > expectedLen {
-		return nil, fmt.Errorf("%w: got %d bytes, expected %d", ErrInvalidLength, len(data), expectedLen)
+	// Validate total length
+	if len(data) < expectedLength {
+		return nil, fmt.Errorf("%w: got %d bytes, need %d",
+			ErrPacketTooShort, len(data), expectedLength)
+	}
+	if len(data) > expectedLength {
+		return nil, fmt.Errorf("%w: got %d bytes, expected %d",
+			ErrInvalidLength, len(data), expectedLength)
+	}
+
+	// Validate checksum before checking end bytes
+	if !d.validateChecksum(data) {
+		var checksum uint16
+		for i := 3; i < packetLength+3; i++ {
+			checksum ^= uint16(data[i])
+		}
+		actualChecksum := uint16(data[len(data)-4])<<8 | uint16(data[len(data)-3])
+		return nil, fmt.Errorf("%w: calculated=0x%04x, received=0x%04x",
+			ErrInvalidChecksum, checksum, actualChecksum)
 	}
 
 	// Validate end bytes
@@ -118,27 +148,8 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 		return nil, fmt.Errorf("%w: invalid end bytes", ErrMalformedPacket)
 	}
 
-	// Validate checksum
-	if !d.validateChecksum(data) {
-		// Calculate expected checksum for debugging
-		var checksum uint16
-		for i := 3; i < packetLength+3; i++ {
-			checksum ^= uint16(data[i])
-		}
-		actualChecksum := uint16(data[packetLength+3])<<8 | uint16(data[packetLength+4])
-		return nil, fmt.Errorf("%w: calculated=0x%04x, received=0x%04x",
-			ErrInvalidChecksum, checksum, actualChecksum)
-	}
-
+	// Process packet based on protocol number
 	reader := bytes.NewReader(data[3:])
-	var protocolNumber uint8
-	if err := binary.Read(reader, binary.BigEndian, &protocolNumber); err != nil {
-		return nil, fmt.Errorf("failed to read protocol number: %w", err)
-	}
-
-	d.logDebug("Protocol number: 0x%02x", protocolNumber)
-
-	// Process based on message type
 	var result *GT06Data
 	var err error
 
@@ -155,8 +166,6 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	case alarmMsg:
 		d.logDebug("Processing alarm message")
 		result, err = d.decodeAlarmMessage(reader)
-	default:
-		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
 	if err != nil {
@@ -172,20 +181,21 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 
 func (d *Decoder) validateChecksum(data []byte) bool {
 	length := int(data[2])
+	payloadEnd := length + 3
 
 	// Check if there's enough data for checksum
-	if len(data) < length+5 {
+	if len(data) < payloadEnd+4 { // +4 for checksum(2) and end bytes(2)
 		return false
 	}
 
 	// Calculate checksum over payload only (excluding start bytes and length byte)
 	var checksum uint16
-	for i := 3; i < length+3; i++ {
+	for i := 3; i < payloadEnd; i++ {
 		checksum ^= uint16(data[i])
 	}
 
 	// Extract checksum from packet (big-endian)
-	packetChecksum := uint16(data[length+3])<<8 | uint16(data[length+4])
+	packetChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
 
 	return checksum == packetChecksum
 }
@@ -249,48 +259,19 @@ func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error)
 type GT06Data struct {
 	Latitude    float64
 	Longitude   float64
-	Speed      float64
-	Course     float64
-	Timestamp  time.Time
-	Valid      bool
-	GPSValid   bool
-	Satellites uint8
-	PowerLevel uint8
-	GSMSignal  uint8
-	Alarm      string
-	Status     map[string]interface{}
+	Speed       float64
+	Course      float64
+	Timestamp   time.Time
+	Valid       bool
+	GPSValid    bool
+	Satellites  uint8
+	PowerLevel  uint8
+	GSMSignal   uint8
+	Alarm       string
+	Status      map[string]interface{}
 }
 
-// GT06 protocol constants
-const (
-	startByte1 = 0x78
-	startByte2 = 0x78
-	minLength  = 15
-	endByte1   = 0x0D // Split endByte into two constants
-	endByte2   = 0x0A
 
-	// Command types
-	loginMsg    = 0x01
-	locationMsg = 0x12
-	statusMsg   = 0x13
-	alarmMsg    = 0x16
-
-	// Response types
-	loginResp    = 0x05
-	locationResp = 0x13
-	alarmResp    = 0x15
-
-	// Alarm types
-	sosAlarm          = 0x01
-	powerCutAlarm     = 0x02
-	vibrationAlarm    = 0x04
-	fenceInAlarm      = 0x10
-	fenceOutAlarm     = 0x11
-	lowBatteryAlarm   = 0x20
-	overspeedAlarm    = 0x40
-)
-
-// GenerateResponse generates the appropriate response packet based on the received message type
 func (d *Decoder) GenerateResponse(msgType uint8, deviceID string) []byte {
 	switch msgType {
 	case loginMsg:
@@ -446,7 +427,6 @@ func (d *Decoder) decodeLoginMessage(reader *bytes.Reader) (*GT06Data, error) {
 	return result, nil
 }
 
-
 func bcdToFloat(bcd uint32) (float64, error) {
 	// Convert BCD to binary values for each digit
 	d1 := (bcd >> 28) & 0x0F
@@ -458,25 +438,25 @@ func bcdToFloat(bcd uint32) (float64, error) {
 	d7 := (bcd >> 4) & 0x0F
 	d8 := bcd & 0x0F
 
-	// Validate all digits are valid BCD
+	// Validate BCD digits
 	for _, digit := range []uint32{d1, d2, d3, d4, d5, d6, d7, d8} {
 		if digit > 9 {
 			return 0, ErrInvalidCoordinate
 		}
 	}
 
-	// First two digits are degrees, next two are minutes, last four are decimal minutes
-	degrees := float64(d1)*10 + float64(d2)
-	minutes := float64(d3)*10 + float64(d4)
-	decimalMinutes := float64(d5)*0.1 + float64(d6)*0.01 + float64(d7)*0.001 + float64(d8)*0.0001
+	// Combine BCD digits into degrees and minutes
+	degrees := float64(d1*10 + d2)
+	minutes := float64(d3*10+d4) + float64(d5)/10.0 + float64(d6)/100.0 +
+		float64(d7)/1000.0 + float64(d8)/10000.0
 
 	// Validate ranges
-	if degrees > 90 || minutes >= 60 || decimalMinutes >= 1.0 {
+	if degrees > 90 || minutes >= 60 {
 		return 0, ErrInvalidCoordinate
 	}
 
 	// Convert to decimal degrees
-	return degrees + (minutes + decimalMinutes*60.0)/60.0, nil
+	return degrees + minutes/60.0, nil
 }
 
 func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
