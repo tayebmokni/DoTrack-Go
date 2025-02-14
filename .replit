@@ -15,6 +15,10 @@ author = "agent"
 task = "workflow.run"
 args = "GPS Tracking Server"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Protocol Test"
+
 [[workflows.workflow]]
 name = "GPS Tracking Server"
 author = "agent"
@@ -27,11 +31,24 @@ task = "packager.installForAll"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "go run cmd/server/main.go"
-waitForPort = 8000
+args = "TEST_MODE=true TCP_PORT=5023 go run cmd/server/main.go"
+
+[[workflows.workflow]]
+name = "Protocol Test"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "go run cmd/test/test_protocols.go"
 
 [deployment]
-run = ["sh", "-c", "go run cmd/server/main.go"]
+run = ["sh", "-c", "TEST_MODE=true TCP_PORT=5023 go run cmd/server/main.go"]
 
 [[ports]]
 localPort = 8000

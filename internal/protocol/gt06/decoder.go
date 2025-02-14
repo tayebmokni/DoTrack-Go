@@ -24,6 +24,10 @@ type GT06Data struct {
 	Valid      bool
 	GPSValid   bool
 	Satellites uint8
+	PowerLevel uint8
+	GSMSignal  uint8
+	Alarm      string
+	Status     map[string]interface{}
 }
 
 // GT06 protocol constants
@@ -32,6 +36,21 @@ const (
 	startByte2 = 0x78
 	minLength  = 15
 	endByte    = 0x0D0A
+
+	// Command types
+	loginMsg    = 0x01
+	locationMsg = 0x12
+	statusMsg   = 0x13
+	alarmMsg    = 0x16
+
+	// Alarm types
+	sosAlarm          = 0x01
+	powerCutAlarm     = 0x02
+	vibrationAlarm    = 0x04
+	fenceInAlarm      = 0x10
+	fenceOutAlarm     = 0x11
+	lowBatteryAlarm   = 0x20
+	overspeedAlarm    = 0x40
 )
 
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
@@ -39,39 +58,49 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 		return nil, errors.New("data too short for GT06 protocol")
 	}
 
-	// Verify protocol header
 	if data[0] != startByte1 || data[1] != startByte2 {
 		return nil, errors.New("invalid GT06 protocol header")
 	}
 
-	// Verify checksum
 	if !d.validateChecksum(data) {
 		return nil, errors.New("invalid checksum")
 	}
 
-	// Skip header (2 bytes) and packet length (1 byte)
 	reader := bytes.NewReader(data[3:])
-	result := &GT06Data{
-		Valid: true,
-	}
-
-	// Read protocol number (1 byte)
 	var protocolNumber uint8
 	if err := binary.Read(reader, binary.BigEndian, &protocolNumber); err != nil {
 		return nil, err
 	}
 
-	// Read GPS status byte
+	// Process based on message type
+	switch protocolNumber {
+	case loginMsg:
+		return d.decodeLoginMessage(reader)
+	case locationMsg:
+		return d.decodeLocationMessage(reader)
+	case statusMsg:
+		return d.decodeStatusMessage(reader)
+	case alarmMsg:
+		return d.decodeAlarmMessage(reader)
+	default:
+		return nil, fmt.Errorf("unsupported message type: %02x", protocolNumber)
+	}
+}
+
+func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error) {
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
 	var statusByte uint8
 	if err := binary.Read(reader, binary.BigEndian, &statusByte); err != nil {
 		return nil, err
 	}
 
-	// Parse GPS status
 	result.GPSValid = (statusByte & 0x01) == 0x01
 	result.Satellites = (statusByte >> 2) & 0x0F
 
-	// Parse location data
 	var rawLat, rawLon uint32
 	if err := binary.Read(reader, binary.BigEndian, &rawLat); err != nil {
 		return nil, err
@@ -81,31 +110,25 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	}
 
 	var err error
-	result.Latitude, err = bcdToFloat(rawLat)
-	if err != nil {
+	if result.Latitude, err = bcdToFloat(rawLat); err != nil {
 		return nil, fmt.Errorf("invalid latitude: %v", err)
 	}
-
-	result.Longitude, err = bcdToFloat(rawLon)
-	if err != nil {
+	if result.Longitude, err = bcdToFloat(rawLon); err != nil {
 		return nil, fmt.Errorf("invalid longitude: %v", err)
 	}
 
-	// Read speed (1 byte)
 	var speed uint8
 	if err := binary.Read(reader, binary.BigEndian, &speed); err != nil {
 		return nil, err
 	}
 	result.Speed = float64(speed)
 
-	// Read course (2 bytes)
 	var course uint16
 	if err := binary.Read(reader, binary.BigEndian, &course); err != nil {
 		return nil, err
 	}
 	result.Course = float64(course)
 
-	// Parse timestamp (6 bytes, BCD format)
 	result.Timestamp, err = d.parseTimestamp(reader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse timestamp: %v", err)
@@ -114,14 +137,85 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	return result, nil
 }
 
-// validateChecksum verifies the data integrity
+func (d *Decoder) decodeAlarmMessage(reader *bytes.Reader) (*GT06Data, error) {
+	locationData, err := d.decodeLocationMessage(reader)
+	if err != nil {
+		return nil, err
+	}
+
+	var alarmType uint8
+	if err := binary.Read(reader, binary.BigEndian, &alarmType); err != nil {
+		return nil, err
+	}
+
+	// Set alarm type based on the received code
+	switch alarmType {
+	case sosAlarm:
+		locationData.Alarm = "sos"
+	case powerCutAlarm:
+		locationData.Alarm = "powerCut"
+	case vibrationAlarm:
+		locationData.Alarm = "vibration"
+	case fenceInAlarm:
+		locationData.Alarm = "geofenceEnter"
+	case fenceOutAlarm:
+		locationData.Alarm = "geofenceExit"
+	case lowBatteryAlarm:
+		locationData.Alarm = "lowBattery"
+	case overspeedAlarm:
+		locationData.Alarm = "overspeed"
+	default:
+		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
+	}
+
+	return locationData, nil
+}
+
+func (d *Decoder) decodeStatusMessage(reader *bytes.Reader) (*GT06Data, error) {
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
+	var statusByte uint8
+	if err := binary.Read(reader, binary.BigEndian, &statusByte); err != nil {
+		return nil, err
+	}
+
+	result.PowerLevel = (statusByte >> 4) & 0x0F
+	result.GSMSignal = statusByte & 0x0F
+
+	result.Status["powerLevel"] = result.PowerLevel
+	result.Status["gsmSignal"] = result.GSMSignal
+	result.Status["charging"] = (statusByte&0x20 != 0)
+	result.Status["engineOn"] = (statusByte&0x40 != 0)
+
+	return result, nil
+}
+
+func (d *Decoder) decodeLoginMessage(reader *bytes.Reader) (*GT06Data, error) {
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
+	// Read IMEI (8 bytes)
+	imei := make([]byte, 8)
+	if _, err := reader.Read(imei); err != nil {
+		return nil, err
+	}
+	result.Status["imei"] = fmt.Sprintf("%x", imei)
+
+	return result, nil
+}
+
 func (d *Decoder) validateChecksum(data []byte) bool {
 	if len(data) < 3 {
 		return false
 	}
 
 	length := int(data[2])
-	if len(data) < length+5 { // Header(2) + Length(1) + Data(length) + Checksum(2)
+	if len(data) < length+5 {
 		return false
 	}
 
@@ -130,16 +224,14 @@ func (d *Decoder) validateChecksum(data []byte) bool {
 		checksum ^= uint16(data[i])
 	}
 
-	packetChecksum := binary.BigEndian.Uint16(data[length+3:length+5])
+	packetChecksum := binary.BigEndian.Uint16(data[length+3 : length+5])
 	return checksum == packetChecksum
 }
 
-// bcdToFloat converts BCD-encoded coordinates to decimal degrees
 func bcdToFloat(bcd uint32) (float64, error) {
-	// Extract degrees and minutes from BCD
 	deg := float64((bcd>>20)&0xF)*10 + float64((bcd>>16)&0xF)
 	min := float64((bcd>>12)&0xF)*10 + float64((bcd>>8)&0xF) +
-		(float64((bcd>>4)&0xF)*10 + float64(bcd&0xF)) / 100.0
+		(float64((bcd>>4)&0xF)*10 + float64(bcd&0xF))/100.0
 
 	if deg > 90 || min >= 60 {
 		return 0, errors.New("invalid BCD coordinate value")
@@ -148,14 +240,12 @@ func bcdToFloat(bcd uint32) (float64, error) {
 	return deg + (min / 60.0), nil
 }
 
-// parseTimestamp extracts timestamp from BCD encoded bytes
 func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
 	var timeBytes [6]byte
 	if _, err := reader.Read(timeBytes[:]); err != nil {
 		return time.Time{}, err
 	}
 
-	// Convert BCD to integers
 	year := 2000 + ((int(timeBytes[0])>>4)*10 + int(timeBytes[0]&0x0F))
 	month := (int(timeBytes[1])>>4)*10 + int(timeBytes[1]&0x0F)
 	day := (int(timeBytes[2])>>4)*10 + int(timeBytes[2]&0x0F)
@@ -163,7 +253,6 @@ func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
 	minute := (int(timeBytes[4])>>4)*10 + int(timeBytes[4]&0x0F)
 	second := (int(timeBytes[5])>>4)*10 + int(timeBytes[5]&0x0F)
 
-	// Validate time components
 	if month < 1 || month > 12 || day < 1 || day > 31 ||
 		hour > 23 || minute > 59 || second > 59 {
 		return time.Time{}, errors.New("invalid timestamp values")
@@ -180,5 +269,19 @@ func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
 	position.Timestamp = data.Timestamp
 	position.Protocol = "gt06"
 	position.Satellites = data.Satellites
+
+	// Add additional status information
+	if data.Alarm != "" {
+		position.Status = map[string]interface{}{
+			"alarm":      data.Alarm,
+			"powerLevel": data.PowerLevel,
+			"gsmSignal":  data.GSMSignal,
+		}
+		// Add all status fields
+		for k, v := range data.Status {
+			position.Status[k] = v
+		}
+	}
+
 	return position
 }

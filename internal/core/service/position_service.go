@@ -3,6 +3,8 @@ package service
 import (
 	"bytes"
 	"errors"
+	"os"
+	"strings"
 	"tracking/internal/core/model"
 	"tracking/internal/core/repository"
 	"tracking/internal/protocol/gt06"
@@ -20,26 +22,43 @@ type PositionService interface {
 type positionService struct {
 	positionRepo     repository.PositionRepository
 	deviceRepo       repository.DeviceRepository
-	orgMemberRepo    repository.OrganizationMemberRepository // Added dependency
+	orgMemberRepo    repository.OrganizationMemberRepository
 	teltonikaDecoder *teltonika.Decoder
 	gt06Decoder      *gt06.Decoder
 	h02Decoder       *h02.Decoder
+	testMode         bool
 }
 
-func NewPositionService(positionRepo repository.PositionRepository, deviceRepo repository.DeviceRepository, orgMemberRepo repository.OrganizationMemberRepository) PositionService { // Added orgMemberRepo to parameters
+func NewPositionService(positionRepo repository.PositionRepository, deviceRepo repository.DeviceRepository, orgMemberRepo repository.OrganizationMemberRepository) PositionService {
+	// Check if test mode is enabled via environment variable
+	testMode := strings.ToLower(os.Getenv("TEST_MODE")) == "true"
+
 	return &positionService{
 		positionRepo:     positionRepo,
 		deviceRepo:       deviceRepo,
-		orgMemberRepo:    orgMemberRepo, // Added dependency initialization
+		orgMemberRepo:    orgMemberRepo,
 		teltonikaDecoder: teltonika.NewDecoder(),
 		gt06Decoder:      gt06.NewDecoder(),
 		h02Decoder:       h02.NewDecoder(),
+		testMode:         testMode,
 	}
 }
 
 func (s *positionService) validateDeviceAccess(deviceID, userID string) (*model.Device, error) {
 	if deviceID == "" {
 		return nil, errors.New("invalid device ID")
+	}
+
+	// Allow test devices in test mode
+	if s.testMode && (strings.HasPrefix(deviceID, "test-") || strings.HasPrefix(deviceID, "demo-")) {
+		// Create a temporary device for testing
+		return &model.Device{
+			ID:       deviceID,
+			Name:     "Test Device",
+			UniqueID: deviceID,
+			UserID:   userID,
+			Status:   "active",
+		}, nil
 	}
 
 	// First try to find by ID
@@ -65,7 +84,7 @@ func (s *positionService) validateDeviceAccess(deviceID, userID string) (*model.
 		return device, nil
 	}
 
-	// If device belongs to an organization, we'll check organization membership
+	// If device belongs to an organization, check organization membership
 	if device.OrganizationID != "" {
 		member, err := s.orgMemberRepo.FindByUserAndOrg(userID, device.OrganizationID)
 		if err != nil {

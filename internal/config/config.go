@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -12,6 +13,8 @@ type Config struct {
 	BaseURL     string
 	RedisURL    string
 	RedisActive bool
+	TCPPort     int
+	TestMode    bool
 }
 
 func LoadConfig() *Config {
@@ -24,6 +27,14 @@ func LoadConfig() *Config {
 		baseURL = "https://" + replitSlug + "." + replitOwner + ".repl.co"
 	}
 
+	// Get TCP port from environment or use default
+	tcpPort := 5023
+	if portStr := os.Getenv("TCP_PORT"); portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil {
+			tcpPort = port
+		}
+	}
+
 	return &Config{
 		Host:        getEnv("HOST", "0.0.0.0"),
 		Port:        getEnv("PORT", "8000"),
@@ -31,6 +42,8 @@ func LoadConfig() *Config {
 		BaseURL:     baseURL,
 		RedisURL:    getEnv("REDIS_URL", ""),
 		RedisActive: strings.ToLower(getEnv("REDIS_ACTIVE", "false")) == "true",
+		TCPPort:     tcpPort,
+		TestMode:    strings.ToLower(getEnv("TEST_MODE", "false")) == "true",
 	}
 }
 

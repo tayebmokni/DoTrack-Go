@@ -49,9 +49,10 @@ func (m *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 		}
 
 		tokenString := parts[1]
-		log.Printf("Processing token: %s", tokenString[:10]) // Log first 10 chars for debugging
+		log.Printf("Processing token: %s...", tokenString[:10]) // Log first 10 chars for debugging
 
-		token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		claims := &Claims{}
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
 			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
@@ -64,10 +65,9 @@ func (m *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 			return
 		}
 
-		claims, ok := token.Claims.(*Claims)
-		if !ok || !token.Valid {
-			log.Printf("Invalid token claims or token not valid")
-			http.Error(w, "Invalid token claims", http.StatusUnauthorized)
+		if !token.Valid {
+			log.Printf("Token is not valid")
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
 			return
 		}
 

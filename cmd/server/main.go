@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"tracking/internal/api/router"
 	"tracking/internal/cache"
 	"tracking/internal/config"
 	"tracking/internal/core/repository"
 	"tracking/internal/core/service"
+	"tracking/internal/protocol/server"
 )
 
 func main() {
@@ -44,13 +50,47 @@ func main() {
 	deviceService := service.NewDeviceService(deviceRepo, orgMemberRepo)
 	positionService := service.NewPositionService(positionRepo, deviceRepo, orgMemberRepo)
 
-	// Initialize router
+	// Initialize HTTP router
 	r := router.NewRouter(deviceService, positionService)
 
-	// Start server
-	addr := fmt.Sprintf("%s:%s", cfg.Host, cfg.Port)
-	log.Printf("Server starting on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+	// Initialize TCP server
+	tcpServer := server.NewTCPServer(5023) // Standard port for GPS tracking devices
+	if err := tcpServer.Start(); err != nil {
+		log.Fatalf("Failed to start TCP server: %v", err)
 	}
+	defer tcpServer.Stop()
+
+	// Create HTTP server
+	httpServer := &http.Server{
+		Addr:    fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
+		Handler: r,
+	}
+
+	// Channel to handle graceful shutdown
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// Start HTTP server in a goroutine
+	go func() {
+		log.Printf("HTTP server starting on %s", httpServer.Addr)
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server failed to start: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	<-stop
+	log.Println("Shutting down servers...")
+
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Shutdown HTTP server
+	if err := httpServer.Shutdown(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	}
+
+	// TCP server is stopped by defer tcpServer.Stop()
+	log.Println("Servers stopped")
 }
