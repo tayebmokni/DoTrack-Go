@@ -26,7 +26,7 @@ var (
 const (
 	startByte1 = 0x78
 	startByte2 = 0x78
-	minLength  = 10 // Minimum length: start(2) + length(1) + protocol(1) + checksum(2) + end(2)
+	minLength  = 10 // Minimum length: start(2) + length(1) + protocol(1) + content(1) + checksum(2) + end(2)
 	endByte1   = 0x0D
 	endByte2   = 0x0A
 
@@ -36,19 +36,11 @@ const (
 	statusMsg   = 0x13
 	alarmMsg    = 0x16
 
-	// Response types
-	loginResp    = 0x05
-	locationResp = 0x13
-	alarmResp    = 0x15
-
-	// Alarm types
-	sosAlarm        = 0x01
-	powerCutAlarm   = 0x02
-	vibrationAlarm  = 0x04
-	fenceInAlarm    = 0x10
-	fenceOutAlarm   = 0x11
-	lowBatteryAlarm = 0x20
-	overspeedAlarm  = 0x40
+	// Minimum content lengths (excluding protocol number)
+	loginMinLen    = 1  // IMEI (1+)
+	locationMinLen = 10 // GPS data(10)
+	statusMinLen   = 4  // Status(4)
+	alarmMinLen    = 11 // GPS data(10) + Alarm type(1)
 )
 
 type Decoder struct {
@@ -107,78 +99,107 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	contentLen := int(data[2])
 	d.logDebug("Content length byte: %d", contentLen)
 
-	// 4. Calculate expected packet length
+	// 4. Calculate total packet length
 	// Total = start(2) + length(1) + content(contentLen) + checksum(2) + end(2)
 	expectedTotal := 2 + 1 + contentLen + 2 + 2
 
 	// 5. Validate total length
 	if len(data) != expectedTotal {
-		return nil, fmt.Errorf("%w: got %d bytes, expected %d (content=%d)",
-			ErrInvalidLength, len(data), expectedTotal, contentLen)
+		return nil, fmt.Errorf("%w: got %d bytes, need %d",
+			ErrInvalidLength, len(data), expectedTotal)
 	}
 
-	// 6. Get protocol number
+	// 6. Get protocol number and validate minimum length
 	protocolNumber := data[3]
 	d.logDebug("Protocol number: 0x%02x", protocolNumber)
 
-	// 7. Validate protocol number
+	// Calculate actual content length (excluding protocol byte)
+	actualContentLen := contentLen - 1
+
+	// 7. Validate protocol-specific minimum length
+	var minContentLen int
 	switch protocolNumber {
-	case loginMsg, locationMsg, statusMsg, alarmMsg:
-		// Valid protocol numbers
+	case loginMsg:
+		minContentLen = loginMinLen
+	case locationMsg:
+		minContentLen = locationMinLen
+	case statusMsg:
+		minContentLen = statusMinLen
+	case alarmMsg:
+		minContentLen = alarmMinLen
 	default:
 		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
-	// 8. Extract payload (excluding protocol number)
-	payloadStart := 4 // After start(2) + length(1) + protocol(1)
-	payloadEnd := payloadStart + contentLen - 1 // -1 for protocol byte
-	payload := data[payloadStart:payloadEnd]
-	d.logDebug("Payload length: %d bytes", len(payload))
+	if actualContentLen < minContentLen {
+		return nil, fmt.Errorf("%w: protocol 0x%02x requires at least %d content bytes, got %d",
+			ErrInvalidLength, protocolNumber, minContentLen, actualContentLen)
+	}
 
-	// 9. Calculate checksum over length byte through payload
-	checksumData := data[2:payloadEnd] // Include length byte and all content
+	// 8. Extract payload
+	payloadStart := 4 // After start(2) + length(1) + protocol(1)
+	payloadEnd := payloadStart + actualContentLen
+
+	// 9. Validate payload boundaries
+	if payloadEnd+4 > len(data) {
+		return nil, fmt.Errorf("%w: invalid payload boundaries",
+			ErrMalformedPacket)
+	}
+
+	payload := data[payloadStart:payloadEnd]
+	d.logDebug("Extracted payload: %d bytes", len(payload))
+
+	// 10. Validate checksum
+	checksumData := data[2:payloadEnd]
 	calculatedChecksum := calculateChecksum(checksumData)
 	receivedChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
-
-	d.logDebug("Checksum validation: data_len=%d, calc=0x%04x, recv=0x%04x",
-		len(checksumData), calculatedChecksum, receivedChecksum)
 
 	if calculatedChecksum != receivedChecksum {
 		return nil, fmt.Errorf("%w: calc=0x%04x, recv=0x%04x",
 			ErrInvalidChecksum, calculatedChecksum, receivedChecksum)
 	}
 
-	// 10. Verify end bytes
-	endStart := payloadEnd + 2 // After payload and checksum
-	if data[endStart] != endByte1 || data[endStart+1] != endByte2 {
+	// 11. Validate end bytes
+	if data[payloadEnd+2] != endByte1 || data[payloadEnd+3] != endByte2 {
 		return nil, fmt.Errorf("%w: invalid end bytes", ErrMalformedPacket)
 	}
 
-	// 11. Process packet based on protocol number
+	// 12. Process message based on protocol
 	var result *GT06Data
 	var err error
 
 	switch protocolNumber {
 	case loginMsg:
-		d.logDebug("Processing login message")
 		result, err = d.decodeLoginMessage(payload)
 	case locationMsg:
-		d.logDebug("Processing location message")
 		result, err = d.decodeLocationMessage(payload)
 	case statusMsg:
-		d.logDebug("Processing status message")
 		result, err = d.decodeStatusMessage(payload)
 	case alarmMsg:
-		d.logDebug("Processing alarm message")
 		result, err = d.decodeAlarmMessage(payload)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("error decoding message type 0x%02x: %w", protocolNumber, err)
+		return nil, fmt.Errorf("failed to decode message: %w", err)
 	}
 
-	d.logDebug("Successfully decoded packet: %+v", result)
+	d.logDebug("Successfully decoded %s message", getMessageTypeName(protocolNumber))
 	return result, nil
+}
+
+func getMessageTypeName(protocolNumber byte) string {
+	switch protocolNumber {
+	case loginMsg:
+		return "login"
+	case locationMsg:
+		return "location"
+	case statusMsg:
+		return "status"
+	case alarmMsg:
+		return "alarm"
+	default:
+		return fmt.Sprintf("unknown_0x%02x", protocolNumber)
+	}
 }
 
 func calculateChecksum(data []byte) uint16 {
@@ -339,20 +360,16 @@ func calculateCRC(data []byte) uint16 {
 }
 
 func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
-	// Alarm message contains location data followed by alarm type
-	// Length should be at least location data (12 bytes) + alarm type (1 byte)
-	if len(data) < 13 {
-		return nil, fmt.Errorf("alarm message too short: need 13 bytes, got %d", len(data))
-	}
-
-	// Location data is all bytes except the last one (alarm type)
+	// First decode location data
 	locationData, err := d.decodeLocationMessage(data[:len(data)-1])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode location data in alarm message: %w", err)
 	}
 
-	// Last byte is alarm type
+	// Extract alarm type from last byte
 	alarmType := data[len(data)-1]
+	d.logDebug("Processing alarm type: 0x%02x", alarmType)
+
 	switch alarmType {
 	case sosAlarm:
 		locationData.Alarm = "sos"
@@ -369,15 +386,19 @@ func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 	case overspeedAlarm:
 		locationData.Alarm = "overspeed"
 	default:
+		// For unknown alarm types, use a consistent format
 		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
+		d.logDebug("Unknown alarm type 0x%02x, using %s",
+			alarmType, locationData.Alarm)
 	}
 
-	// Add alarm to status map
+	// Add alarm type to status map
 	if locationData.Status == nil {
 		locationData.Status = make(map[string]interface{})
 	}
 	locationData.Status["alarm"] = locationData.Alarm
 
+	d.logDebug("Alarm message decoded: type=%s", locationData.Alarm)
 	return locationData, nil
 }
 
@@ -398,14 +419,25 @@ func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
 
 	// Validate power level (0-15)
 	if result.PowerLevel > 15 {
-		return nil, fmt.Errorf("%w: invalid power level %d", ErrMalformedPacket, result.PowerLevel)
+		return nil, fmt.Errorf("%w: power level %d exceeds maximum of 15",
+			ErrMalformedPacket, result.PowerLevel)
 	}
 
-	// Add status fields
+	// Add power and signal levels to status
 	result.Status["powerLevel"] = result.PowerLevel
 	result.Status["gsmSignal"] = result.GSMSignal
-	result.Status["charging"] = (statusByte&0x20 != 0)
-	result.Status["engineOn"] = (statusByte&0x40 != 0)
+
+	// Parse additional status flags if present
+	if len(data) > 1 {
+		result.Status["charging"] = (data[1]&0x20 != 0)
+		result.Status["engineOn"] = (data[1]&0x40 != 0)
+
+		d.logDebug("Status flags: charging=%v, engineOn=%v",
+			result.Status["charging"], result.Status["engineOn"])
+	}
+
+	d.logDebug("Status: power=%d/15, gsm=%d/15",
+		result.PowerLevel, result.GSMSignal)
 
 	return result, nil
 }
@@ -518,3 +550,16 @@ func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
 
 	return position
 }
+
+var (
+	loginResp    = byte(0x01)
+	locationResp = byte(0x12)
+	alarmResp    = byte(0x16)
+	sosAlarm     = byte(0x01)
+	powerCutAlarm = byte(0x02)
+	vibrationAlarm = byte(0x03)
+	fenceInAlarm  = byte(0x04)
+	fenceOutAlarm = byte(0x05)
+	lowBatteryAlarm = byte(0x06)
+	overspeedAlarm = byte(0x07)
+)
