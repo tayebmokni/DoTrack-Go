@@ -41,6 +41,18 @@ func (r *inMemoryDeviceRepository) Update(device *model.Device) error {
 	return nil
 }
 
+func (r *inMemoryDeviceRepository) Delete(id string) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if _, exists := r.devices[id]; !exists {
+		return fmt.Errorf("device with ID %s not found", id)
+	}
+
+	delete(r.devices, id)
+	return nil
+}
+
 func (r *inMemoryDeviceRepository) FindByID(id string) (*model.Device, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()

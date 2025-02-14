@@ -50,7 +50,7 @@ type loginResponse struct {
 func main() {
 	// Wait for servers to start
 	fmt.Println("Waiting for servers to start...")
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second) // Increased delay to ensure server is ready
 
 	// Get a test JWT token with retries
 	var token string

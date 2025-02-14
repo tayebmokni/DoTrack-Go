@@ -32,6 +32,7 @@ task = "packager.installForAll"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "TEST_MODE=true TCP_PORT=5023 PORT=8000 JWT_ACCESS_SECRET=test_jwt_secret_key_123 MONGODB_URI=mongodb://localhost:27017/tracking go run cmd/server/main.go"
+waitForPort = 8000
 
 [[workflows.workflow]]
 name = "Protocol Test"

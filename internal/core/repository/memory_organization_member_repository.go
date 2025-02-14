@@ -43,6 +43,19 @@ func (r *inMemoryOrganizationMemberRepository) Update(member *model.Organization
 	return nil
 }
 
+func (r *inMemoryOrganizationMemberRepository) Delete(userID, orgID string) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	key := fmt.Sprintf("%s:%s", userID, orgID)
+	if _, exists := r.members[key]; !exists {
+		return fmt.Errorf("member not found")
+	}
+
+	delete(r.members, key)
+	return nil
+}
+
 func (r *inMemoryOrganizationMemberRepository) FindByUserAndOrg(userID, orgID string) (*model.OrganizationMember, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
