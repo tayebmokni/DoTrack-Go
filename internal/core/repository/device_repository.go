@@ -16,6 +16,7 @@ type DeviceRepository interface {
 	FindByID(id string) (*model.Device, error)
 	FindAll() ([]*model.Device, error)
 	FindByUserID(userID string) ([]*model.Device, error)
+	FindByUniqueID(uniqueID string) (*model.Device, error) // Added method
 }
 
 type MongoDeviceRepository struct {
@@ -96,4 +97,17 @@ func (r *MongoDeviceRepository) FindByUserID(userID string) ([]*model.Device, er
 		return nil, err
 	}
 	return devices, nil
+}
+
+// Add new method to find device by uniqueId
+func (r *MongoDeviceRepository) FindByUniqueID(uniqueID string) (*model.Device, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var device model.Device
+	err := r.collection.FindOne(ctx, bson.M{"uniqueid": uniqueID}).Decode(&device)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	return &device, err
 }

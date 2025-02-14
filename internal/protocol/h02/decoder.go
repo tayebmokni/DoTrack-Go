@@ -2,7 +2,6 @@ package h02
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"strconv"
 	"strings"

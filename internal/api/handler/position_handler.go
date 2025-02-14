@@ -101,7 +101,11 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get user ID from context
-	userID := r.Context().Value("userID").(string)
+	userID, ok := r.Context().Value("user_id").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	// Decode base64 data
 	rawData, err := base64.StdEncoding.DecodeString(req.RawData)

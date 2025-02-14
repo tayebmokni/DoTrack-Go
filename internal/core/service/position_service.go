@@ -20,15 +20,17 @@ type PositionService interface {
 type positionService struct {
 	positionRepo     repository.PositionRepository
 	deviceRepo       repository.DeviceRepository
+	orgMemberRepo    repository.OrganizationMemberRepository // Added dependency
 	teltonikaDecoder *teltonika.Decoder
 	gt06Decoder      *gt06.Decoder
 	h02Decoder       *h02.Decoder
 }
 
-func NewPositionService(positionRepo repository.PositionRepository, deviceRepo repository.DeviceRepository) PositionService {
+func NewPositionService(positionRepo repository.PositionRepository, deviceRepo repository.DeviceRepository, orgMemberRepo repository.OrganizationMemberRepository) PositionService { // Added orgMemberRepo to parameters
 	return &positionService{
 		positionRepo:     positionRepo,
 		deviceRepo:       deviceRepo,
+		orgMemberRepo:    orgMemberRepo, // Added dependency initialization
 		teltonikaDecoder: teltonika.NewDecoder(),
 		gt06Decoder:      gt06.NewDecoder(),
 		h02Decoder:       h02.NewDecoder(),
@@ -40,12 +42,22 @@ func (s *positionService) validateDeviceAccess(deviceID, userID string) (*model.
 		return nil, errors.New("invalid device ID")
 	}
 
+	// First try to find by ID
 	device, err := s.deviceRepo.FindByID(deviceID)
 	if err != nil {
 		return nil, err
 	}
+
+	// If not found by ID, try to find by uniqueId
 	if device == nil {
-		return nil, errors.New("unauthorized device: device not registered in the system")
+		device, err = s.deviceRepo.FindByUniqueID(deviceID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if device == nil {
+		return nil, errors.New("unauthorized device: device not found")
 	}
 
 	// Check if user owns the device directly
@@ -53,14 +65,18 @@ func (s *positionService) validateDeviceAccess(deviceID, userID string) (*model.
 		return device, nil
 	}
 
-	// If device belongs to an organization, we would check organization membership here
-	// For now, if the device has an organization ID and no direct user ownership,
-	// we'll deny access until organization membership check is implemented
-	if device.OrganizationID != "" && device.UserID != userID {
-		return nil, errors.New("unauthorized access: device belongs to an organization")
+	// If device belongs to an organization, we'll check organization membership
+	if device.OrganizationID != "" {
+		member, err := s.orgMemberRepo.FindByUserAndOrg(userID, device.OrganizationID)
+		if err != nil {
+			return nil, errors.New("error checking organization membership")
+		}
+		if member != nil {
+			return device, nil
+		}
 	}
 
-	return nil, errors.New("unauthorized access to device")
+	return nil, errors.New("unauthorized access: user does not have permission to access this device")
 }
 
 func (s *positionService) AddPosition(deviceID string, latitude, longitude float64, userID string) (*model.Position, error) {

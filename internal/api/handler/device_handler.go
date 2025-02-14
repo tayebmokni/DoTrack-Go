@@ -30,12 +30,16 @@ func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Get user ID from context (set by auth middleware)
-	userID := r.Context().Value("userID").(string)
+	// Get user ID from context
+	userID, ok := r.Context().Value("user_id").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
 	device, err := h.deviceService.CreateDevice(req.Name, req.UniqueID, userID, req.OrganizationID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -44,10 +48,12 @@ func (h *DeviceHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DeviceHandler) GetDevices(w http.ResponseWriter, r *http.Request) {
-	// Get user ID from context
-	userID := r.Context().Value("userID").(string)
+	userID, ok := r.Context().Value("user_id").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 
-	// Get organization ID from query parameters
 	orgID := r.URL.Query().Get("organizationId")
 
 	var devices interface{}

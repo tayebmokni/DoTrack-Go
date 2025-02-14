@@ -37,7 +37,7 @@ func main() {
 
 	// Initialize services
 	deviceService := service.NewDeviceService(deviceRepo, orgMemberRepo)
-	positionService := service.NewPositionService(positionRepo, deviceRepo)
+	positionService := service.NewPositionService(positionRepo, deviceRepo, orgMemberRepo)
 
 	// Initialize router
 	r := router.NewRouter(deviceService, positionService)
