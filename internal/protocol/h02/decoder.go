@@ -101,8 +101,10 @@ func (d *Decoder) Decode(data []byte) (*H02Data, error) {
 }
 
 func (d *Decoder) decodeInfoReport(parts []string) (*H02Data, error) {
-	if len(parts) < 12 {
-		return nil, fmt.Errorf("%w: info report requires at least 12 fields", ErrInvalidFormat)
+	// Check minimum required fields for info report
+	// DeviceID, Status, Lat, NS, Lon, EW, Speed, Course, Date, PowerLevel
+	if len(parts) < 10 {
+		return nil, fmt.Errorf("%w: info report requires at least 10 fields", ErrInvalidFormat)
 	}
 
 	result := &H02Data{
@@ -111,36 +113,46 @@ func (d *Decoder) decodeInfoReport(parts []string) (*H02Data, error) {
 		Timestamp: time.Now(),
 	}
 
-	// Parse coordinates
+	// Check GPS fix status ('A' = valid, 'V' = invalid)
+	if parts[1] != "A" {
+		result.Valid = false
+		d.logDebug("Invalid GPS fix status: %s", parts[1])
+	}
+
+	// Parse latitude (format: DDMM.MMMM,N/S)
 	var err error
-	if result.Latitude, err = d.parseCoordinate(parts[4], parts[5]); err != nil {
+	if result.Latitude, err = d.parseCoordinate(parts[2], parts[3]); err != nil {
 		return nil, fmt.Errorf("invalid latitude: %w", err)
 	}
 
-	if result.Longitude, err = d.parseCoordinate(parts[6], parts[7]); err != nil {
+	// Parse longitude (format: DDDMM.MMMM,E/W)
+	if result.Longitude, err = d.parseCoordinate(parts[4], parts[5]); err != nil {
 		return nil, fmt.Errorf("invalid longitude: %w", err)
 	}
 
-	// Parse speed (knots to km/h)
-	if speed, err := strconv.ParseFloat(parts[8], 64); err == nil {
+	d.logDebug("Parsed coordinates: %.6f, %.6f", result.Latitude, result.Longitude)
+
+	// Parse speed (convert knots to km/h)
+	if speed, err := strconv.ParseFloat(parts[6], 64); err == nil {
 		result.Speed = speed * 1.852 // Convert knots to km/h
+		d.logDebug("Converted speed from %.2f knots to %.2f km/h", speed, result.Speed)
 	}
 
 	// Parse course (heading)
-	if course, err := strconv.ParseFloat(parts[9], 64); err == nil {
+	if course, err := strconv.ParseFloat(parts[7], 64); err == nil {
 		result.Course = course
 	}
 
-	// Parse timestamp if present
-	if len(parts) > 10 {
-		if ts, err := d.parseTimestamp(parts[10]); err == nil {
-			result.Timestamp = ts
-		}
+	// Parse timestamp (YYMMDD format)
+	if ts, err := d.parseTimestamp(parts[8]); err == nil {
+		result.Timestamp = ts
+	} else {
+		d.logDebug("Failed to parse timestamp: %v", err)
 	}
 
-	// Parse additional status fields
-	if len(parts) > 11 {
-		result.PowerLevel = parsePowerLevel(parts[11])
+	// Parse power level
+	if len(parts) > 9 {
+		result.PowerLevel = parsePowerLevel(parts[9])
 		result.Status["powerLevel"] = result.PowerLevel
 	}
 
@@ -150,14 +162,24 @@ func (d *Decoder) decodeInfoReport(parts []string) (*H02Data, error) {
 func (d *Decoder) parseCoordinate(coord, dir string) (float64, error) {
 	val, err := strconv.ParseFloat(coord, 64)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("invalid coordinate format: %v", err)
 	}
 
-	// Convert DDMM.MMMM to decimal degrees
-	degrees := float64(int(val/100))
-	minutes := val - degrees*100
+	// Extract degrees and minutes
+	var degrees, minutes float64
 
-	result := degrees + minutes/60.0
+	if dir == "N" || dir == "S" {
+		// Latitude: DDMM.MMMM
+		degrees = float64(int(val / 100))
+		minutes = val - (degrees * 100)
+	} else {
+		// Longitude: DDDMM.MMMM
+		degrees = float64(int(val / 100))
+		minutes = val - (degrees * 100)
+	}
+
+	// Convert to decimal degrees
+	result := degrees + (minutes / 60.0)
 
 	// Apply direction
 	if dir == "S" || dir == "W" {
@@ -166,35 +188,32 @@ func (d *Decoder) parseCoordinate(coord, dir string) (float64, error) {
 
 	// Validate ranges
 	if (dir == "N" || dir == "S") && (result < -90 || result > 90) {
-		return 0, ErrInvalidCoordinate
+		return 0, fmt.Errorf("%w: lat=%.6f", ErrInvalidCoordinate, result)
 	}
 	if (dir == "E" || dir == "W") && (result < -180 || result > 180) {
-		return 0, ErrInvalidCoordinate
+		return 0, fmt.Errorf("%w: lon=%.6f", ErrInvalidCoordinate, result)
 	}
 
+	d.logDebug("Parsed coordinate %s%s to %.6f", coord, dir, result)
 	return result, nil
 }
 
 func (d *Decoder) parseTimestamp(date string) (time.Time, error) {
-	// Parse date string in format YYMMDDHHMMSS
-	if len(date) != 12 {
+	if len(date) != 6 {
 		return time.Time{}, fmt.Errorf("invalid date format: %s", date)
 	}
 
+	// Parse date string in format YYMMDD
 	year, _ := strconv.Atoi("20" + date[0:2])
 	month, _ := strconv.Atoi(date[2:4])
 	day, _ := strconv.Atoi(date[4:6])
-	hour, _ := strconv.Atoi(date[6:8])
-	minute, _ := strconv.Atoi(date[8:10])
-	second, _ := strconv.Atoi(date[10:12])
 
 	// Validate ranges
-	if month < 1 || month > 12 || day < 1 || day > 31 ||
-		hour > 23 || minute > 59 || second > 59 {
-		return time.Time{}, fmt.Errorf("invalid date/time values")
+	if month < 1 || month > 12 || day < 1 || day > 31 {
+		return time.Time{}, fmt.Errorf("invalid date values: day=%d, month=%d", day, month)
 	}
 
-	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
+	return time.Date(year, time.Month(month), day, 0, 0, 0, 0, time.UTC), nil
 }
 
 func parsePowerLevel(power string) uint8 {

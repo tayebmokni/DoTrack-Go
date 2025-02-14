@@ -31,6 +31,10 @@ args = "Protocol Test - Teltonika"
 task = "workflow.run"
 args = "Protocol Test Suite"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Protocol Test - GT06"
+
 [[workflows.workflow]]
 name = "GPS Tracking Server"
 author = "agent"
@@ -101,6 +105,20 @@ task = "packager.installForAll"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "go test -v ./internal/protocol/{gt06,h02,teltonika}/..."
+
+[[workflows.workflow]]
+name = "Protocol Test - GT06"
+author = "agent"
+
+[workflows.workflow.metadata]
+agentRequireRestartOnSave = false
+
+[[workflows.workflow.tasks]]
+task = "packager.installForAll"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "go test -v ./internal/protocol/gt06/..."
 
 [deployment]
 run = ["sh", "-c", "TEST_MODE=true TCP_PORT=5023 PORT=8000 JWT_ACCESS_SECRET=test_jwt_secret_key_123 MONGODB_URI=mongodb://localhost:27017/tracking GO_VERBOSE=1 go run -v cmd/server/main.go"]

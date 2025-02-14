@@ -89,6 +89,7 @@ const (
 	overspeedAlarm  = 0x40
 )
 
+// Update packet length validation in GT06 decoder
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode...")
 	d.logPacket(data, "Received")
@@ -105,67 +106,63 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 			ErrInvalidHeader, startByte1, startByte2, data[0], data[1])
 	}
 
-	// Extract stated packet length
+	// Get stated packet length from third byte
 	packetLength := int(data[2])
 	d.logDebug("Stated packet length: %d", packetLength)
 
-	// Get protocol number for message type
+	// Get protocol number
 	protocolNumber := data[3]
 	d.logDebug("Protocol number: 0x%02x", protocolNumber)
 
-	// Calculate total expected length based on protocol
-	var expectedLength int
+	// Calculate expected total length (including start, length, and end bytes)
+	expectedLength := packetLength + 5 // start(2) + length(1) + end(2)
+
+	// Validate total packet length
+	if len(data) != expectedLength {
+		return nil, fmt.Errorf("%w: stated length=%d, actual=%d, expected total=%d",
+			ErrInvalidLength, packetLength, len(data), expectedLength)
+	}
+
+	// Validate protocol number
 	switch protocolNumber {
 	case loginMsg, locationMsg, statusMsg, alarmMsg:
-		expectedLength = packetLength + 5 // start(2) + length(1) + end(2)
+		// Valid protocol numbers
 	default:
 		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
-	// Validate total length
-	if len(data) < expectedLength {
-		return nil, fmt.Errorf("%w: got %d bytes, need %d",
-			ErrPacketTooShort, len(data), expectedLength)
-	}
-	if len(data) > expectedLength {
-		return nil, fmt.Errorf("%w: got %d bytes, expected %d",
-			ErrInvalidLength, len(data), expectedLength)
-	}
-
-	// Validate checksum before checking end bytes
-	if !d.validateChecksum(data) {
-		var checksum uint16
-		for i := 3; i < packetLength+3; i++ {
-			checksum ^= uint16(data[i])
-		}
-		actualChecksum := uint16(data[len(data)-4])<<8 | uint16(data[len(data)-3])
+	// Calculate and verify checksum
+	checksum := d.calculateChecksum(data[3:packetLength+3])
+	packetChecksum := uint16(data[packetLength+3])<<8 | uint16(data[packetLength+4])
+	if checksum != packetChecksum {
 		return nil, fmt.Errorf("%w: calculated=0x%04x, received=0x%04x",
-			ErrInvalidChecksum, checksum, actualChecksum)
+			ErrInvalidChecksum, checksum, packetChecksum)
 	}
 
-	// Validate end bytes
+	// Verify end bytes
 	if data[len(data)-2] != endByte1 || data[len(data)-1] != endByte2 {
-		return nil, fmt.Errorf("%w: invalid end bytes", ErrMalformedPacket)
+		return nil, fmt.Errorf("%w: invalid end bytes 0x%02x%02x",
+			ErrMalformedPacket, data[len(data)-2], data[len(data)-1])
 	}
 
 	// Process packet based on protocol number
-	reader := bytes.NewReader(data[3:])
+	payload := data[3:packetLength+3]
 	var result *GT06Data
 	var err error
 
 	switch protocolNumber {
 	case loginMsg:
 		d.logDebug("Processing login message")
-		result, err = d.decodeLoginMessage(reader)
+		result, err = d.decodeLoginMessage(payload)
 	case locationMsg:
 		d.logDebug("Processing location message")
-		result, err = d.decodeLocationMessage(reader)
+		result, err = d.decodeLocationMessage(payload)
 	case statusMsg:
 		d.logDebug("Processing status message")
-		result, err = d.decodeStatusMessage(reader)
+		result, err = d.decodeStatusMessage(payload)
 	case alarmMsg:
 		d.logDebug("Processing alarm message")
-		result, err = d.decodeAlarmMessage(reader)
+		result, err = d.decodeAlarmMessage(payload)
 	}
 
 	if err != nil {
@@ -179,50 +176,34 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	return result, nil
 }
 
-func (d *Decoder) validateChecksum(data []byte) bool {
-	length := int(data[2])
-	payloadEnd := length + 3
-
-	// Check if there's enough data for checksum
-	if len(data) < payloadEnd+4 { // +4 for checksum(2) and end bytes(2)
-		return false
-	}
-
-	// Calculate checksum over payload only (excluding start bytes and length byte)
+func (d *Decoder) calculateChecksum(data []byte) uint16 {
 	var checksum uint16
-	for i := 3; i < payloadEnd; i++ {
-		checksum ^= uint16(data[i])
+	for _, b := range data {
+		checksum ^= uint16(b)
 	}
-
-	// Extract checksum from packet (big-endian)
-	packetChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
-
-	return checksum == packetChecksum
+	return checksum
 }
 
-func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error) {
+func (d *Decoder) decodeLocationMessage(data []byte) (*GT06Data, error) {
+	if len(data) < 12 {
+		return nil, fmt.Errorf("location message too short")
+	}
+
 	result := &GT06Data{
 		Valid:  true,
 		Status: make(map[string]interface{}),
 	}
 
-	var statusByte uint8
-	if err := binary.Read(reader, binary.BigEndian, &statusByte); err != nil {
-		return nil, fmt.Errorf("failed to read status byte: %w", err)
-	}
-
+	// Read GPS status byte
+	statusByte := data[0]
 	result.GPSValid = (statusByte&0x01) == 0x01
 	result.Satellites = (statusByte >> 2) & 0x0F
 
 	d.logDebug("GPS Valid: %v, Satellites: %d", result.GPSValid, result.Satellites)
 
-	var rawLat, rawLon uint32
-	if err := binary.Read(reader, binary.BigEndian, &rawLat); err != nil {
-		return nil, fmt.Errorf("failed to read latitude: %w", err)
-	}
-	if err := binary.Read(reader, binary.BigEndian, &rawLon); err != nil {
-		return nil, fmt.Errorf("failed to read longitude: %w", err)
-	}
+	// Extract coordinates
+	rawLat := binary.BigEndian.Uint32(data[1:5])
+	rawLon := binary.BigEndian.Uint32(data[5:9])
 
 	var err error
 	if result.Latitude, err = bcdToFloat(rawLat); err != nil {
@@ -234,25 +215,23 @@ func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error)
 
 	d.logDebug("Position: %.6f, %.6f", result.Latitude, result.Longitude)
 
-	var speed uint8
-	if err := binary.Read(reader, binary.BigEndian, &speed); err != nil {
-		return nil, fmt.Errorf("failed to read speed: %w", err)
-	}
-	result.Speed = float64(speed)
-
-	var course uint16
-	if err := binary.Read(reader, binary.BigEndian, &course); err != nil {
-		return nil, fmt.Errorf("failed to read course: %w", err)
-	}
-	result.Course = float64(course)
+	// Extract speed and course
+	result.Speed = float64(data[9])
+	result.Course = float64(binary.BigEndian.Uint16(data[10:12]))
 
 	d.logDebug("Speed: %.1f, Course: %.1f", result.Speed, result.Course)
 
-	if result.Timestamp, err = d.parseTimestamp(reader); err != nil {
-		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
+	// Parse timestamp if present
+	if len(data) >= 18 {
+		timeData := data[12:18]
+		if ts, err := d.parseTimestamp(bytes.NewReader(timeData)); err == nil {
+			result.Timestamp = ts
+			d.logDebug("Timestamp: %v", result.Timestamp)
+		} else {
+			d.logDebug("Failed to parse timestamp: %v", err)
+		}
 	}
 
-	d.logDebug("Timestamp: %v", result.Timestamp)
 	return result, nil
 }
 
@@ -270,7 +249,6 @@ type GT06Data struct {
 	Alarm       string
 	Status      map[string]interface{}
 }
-
 
 func (d *Decoder) GenerateResponse(msgType uint8, deviceID string) []byte {
 	switch msgType {
@@ -355,18 +333,19 @@ func calculateCRC(data []byte) uint16 {
 	return crc
 }
 
-func (d *Decoder) decodeAlarmMessage(reader *bytes.Reader) (*GT06Data, error) {
-	locationData, err := d.decodeLocationMessage(reader)
+func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
+	// Alarm message contains location data followed by alarm type
+	locationData, err := d.decodeLocationMessage(data)
 	if err != nil {
 		return nil, err
 	}
 
-	var alarmType uint8
-	if err := binary.Read(reader, binary.BigEndian, &alarmType); err != nil {
-		return nil, err
+	// Last byte is alarm type
+	if len(data) < len(data)-1 {
+		return nil, fmt.Errorf("alarm message too short")
 	}
 
-	// Set alarm type based on the received code
+	alarmType := data[len(data)-1]
 	switch alarmType {
 	case sosAlarm:
 		locationData.Alarm = "sos"
@@ -386,20 +365,26 @@ func (d *Decoder) decodeAlarmMessage(reader *bytes.Reader) (*GT06Data, error) {
 		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
 	}
 
+	// Add alarm status
+	if locationData.Status == nil {
+		locationData.Status = make(map[string]interface{})
+	}
+	locationData.Status["alarm"] = locationData.Alarm
+
 	return locationData, nil
 }
 
-func (d *Decoder) decodeStatusMessage(reader *bytes.Reader) (*GT06Data, error) {
+func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
+	if len(data) < 1 {
+		return nil, fmt.Errorf("status message too short")
+	}
+
 	result := &GT06Data{
 		Valid:  true,
 		Status: make(map[string]interface{}),
 	}
 
-	var statusByte uint8
-	if err := binary.Read(reader, binary.BigEndian, &statusByte); err != nil {
-		return nil, err
-	}
-
+	statusByte := data[0]
 	result.PowerLevel = (statusByte >> 4) & 0x0F
 	result.GSMSignal = statusByte & 0x0F
 
@@ -411,18 +396,18 @@ func (d *Decoder) decodeStatusMessage(reader *bytes.Reader) (*GT06Data, error) {
 	return result, nil
 }
 
-func (d *Decoder) decodeLoginMessage(reader *bytes.Reader) (*GT06Data, error) {
+func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
 	result := &GT06Data{
 		Valid:  true,
 		Status: make(map[string]interface{}),
 	}
 
-	// Read IMEI (8 bytes)
-	imei := make([]byte, 8)
-	if _, err := reader.Read(imei); err != nil {
-		return nil, err
+	if len(data) < 8 {
+		return nil, fmt.Errorf("login message too short")
 	}
-	result.Status["imei"] = fmt.Sprintf("%x", imei)
+
+	// Extract IMEI from payload
+	result.Status["imei"] = fmt.Sprintf("%x", data[:8])
 
 	return result, nil
 }
