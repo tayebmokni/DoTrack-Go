@@ -100,5 +100,17 @@ func NewRouter(
 		positionHandler.GetLatestPosition(w, r)
 	})))
 
+	// Add the raw data endpoint
+	mux.Handle("/api/positions/raw", withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			positionHandler.ProcessRawData(w, r)
+		case http.MethodOptions:
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
+
 	return mux
 }
