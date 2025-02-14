@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"tracking/internal/api/router"
+	"tracking/internal/cache"
 	"tracking/internal/config"
 	"tracking/internal/core/repository"
 	"tracking/internal/core/service"
@@ -21,6 +22,10 @@ func main() {
 	log.Printf("Host: %s", cfg.Host)
 	log.Printf("Port: %s", cfg.Port)
 	log.Printf("Base URL: %s", cfg.BaseURL)
+
+	// Initialize Redis if URL is provided
+	cache.Initialize(cfg.RedisURL)
+	defer cache.Close()
 
 	// Connect to MongoDB
 	db, err := config.ConnectMongoDB(mongoConfig)

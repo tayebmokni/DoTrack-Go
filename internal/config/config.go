@@ -10,6 +10,7 @@ type Config struct {
 	Port     string
 	LogLevel string
 	BaseURL  string
+	RedisURL string
 }
 
 func LoadConfig() *Config {
@@ -27,6 +28,7 @@ func LoadConfig() *Config {
 		Port:     getEnv("PORT", "8000"),
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 		BaseURL:  baseURL,
+		RedisURL: getEnv("REDIS_URL", ""), // Redis URL is optional
 	}
 }
 
