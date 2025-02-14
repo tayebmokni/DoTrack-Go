@@ -41,13 +41,16 @@ func Initialize(redisURL string) {
 	}
 
 	enabled = true
-	log.Println("Redis cache initialized successfully")
+	log.Printf("Redis cache initialized successfully at %s", redisURL)
 }
 
 // Close closes the Redis connection
 func Close() {
 	if redisClient != nil {
-		redisClient.Close()
+		if err := redisClient.Close(); err != nil {
+			log.Printf("Error closing Redis connection: %v", err)
+		}
+		log.Println("Redis connection closed")
 	}
 }
 
@@ -59,10 +62,16 @@ func Set(ctx context.Context, key string, value interface{}, expiration time.Dur
 
 	data, err := json.Marshal(value)
 	if err != nil {
+		log.Printf("Error marshaling data for cache key %s: %v", key, err)
 		return err
 	}
 
-	return redisClient.Set(ctx, key, data, expiration).Err()
+	if err := redisClient.Set(ctx, key, data, expiration).Err(); err != nil {
+		log.Printf("Error setting cache key %s: %v", key, err)
+		return err
+	}
+
+	return nil
 }
 
 // Get retrieves a value from cache
@@ -73,10 +82,18 @@ func Get(ctx context.Context, key string, dest interface{}) error {
 
 	data, err := redisClient.Get(ctx, key).Bytes()
 	if err != nil {
+		if err != redis.Nil {
+			log.Printf("Error getting cache key %s: %v", key, err)
+		}
 		return err
 	}
 
-	return json.Unmarshal(data, dest)
+	if err := json.Unmarshal(data, dest); err != nil {
+		log.Printf("Error unmarshaling data from cache key %s: %v", key, err)
+		return err
+	}
+
+	return nil
 }
 
 // Delete removes a key from cache
@@ -85,5 +102,24 @@ func Delete(ctx context.Context, key string) error {
 		return nil
 	}
 
-	return redisClient.Del(ctx, key).Err()
+	if err := redisClient.Del(ctx, key).Err(); err != nil {
+		log.Printf("Error deleting cache key %s: %v", key, err)
+		return err
+	}
+
+	return nil
+}
+
+// BatchDelete removes multiple keys from cache
+func BatchDelete(ctx context.Context, keys ...string) error {
+	if !enabled || len(keys) == 0 {
+		return nil
+	}
+
+	if err := redisClient.Del(ctx, keys...).Err(); err != nil {
+		log.Printf("Error batch deleting cache keys: %v", err)
+		return err
+	}
+
+	return nil
 }

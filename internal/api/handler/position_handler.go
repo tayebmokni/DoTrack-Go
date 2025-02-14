@@ -36,13 +36,13 @@ func (h *PositionHandler) AddPosition(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := util.GetUserIDFromToken(r)
+	claims, err := util.GetUserClaims(r)
 	if err != nil {
 		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
 
-	position, err := h.positionService.AddPosition(req.DeviceID, req.Latitude, req.Longitude, userID)
+	position, err := h.positionService.AddPosition(req.DeviceID, req.Latitude, req.Longitude, claims.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -59,13 +59,13 @@ func (h *PositionHandler) GetPositions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := util.GetUserIDFromToken(r)
+	claims, err := util.GetUserClaims(r)
 	if err != nil {
 		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
 
-	positions, err := h.positionService.GetDevicePositions(deviceID, userID)
+	positions, err := h.positionService.GetDevicePositions(deviceID, claims.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -82,13 +82,13 @@ func (h *PositionHandler) GetLatestPosition(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	userID, err := util.GetUserIDFromToken(r)
+	claims, err := util.GetUserClaims(r)
 	if err != nil {
 		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
 	}
 
-	position, err := h.positionService.GetLatestPosition(deviceID, userID)
+	position, err := h.positionService.GetLatestPosition(deviceID, claims.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -110,7 +110,7 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	userID, err := util.GetUserIDFromToken(r)
+	claims, err := util.GetUserClaims(r)
 	if err != nil {
 		http.Error(w, "Invalid authorization token", http.StatusUnauthorized)
 		return
@@ -123,7 +123,7 @@ func (h *PositionHandler) ProcessRawData(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	position, err := h.positionService.ProcessRawData(req.DeviceID, rawData, userID)
+	position, err := h.positionService.ProcessRawData(req.DeviceID, rawData, claims.UserID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
