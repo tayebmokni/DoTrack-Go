@@ -6,11 +6,12 @@ import (
 )
 
 type Config struct {
-	Host     string
-	Port     string
-	LogLevel string
-	BaseURL  string
-	RedisURL string
+	Host        string
+	Port        string
+	LogLevel    string
+	BaseURL     string
+	RedisURL    string
+	RedisActive bool
 }
 
 func LoadConfig() *Config {
@@ -24,11 +25,12 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		Host:     getEnv("HOST", "0.0.0.0"),
-		Port:     getEnv("PORT", "8000"),
-		LogLevel: getEnv("LOG_LEVEL", "info"),
-		BaseURL:  baseURL,
-		RedisURL: getEnv("REDIS_URL", ""), // Redis URL is optional
+		Host:        getEnv("HOST", "0.0.0.0"),
+		Port:        getEnv("PORT", "8000"),
+		LogLevel:    getEnv("LOG_LEVEL", "info"),
+		BaseURL:     baseURL,
+		RedisURL:    getEnv("REDIS_URL", ""),
+		RedisActive: strings.ToLower(getEnv("REDIS_ACTIVE", "false")) == "true",
 	}
 }
 

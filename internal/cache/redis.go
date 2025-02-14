@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -16,6 +18,14 @@ var (
 
 // Initialize sets up Redis connection if REDIS_URL is provided
 func Initialize(redisURL string) {
+	// Check if Redis is enabled via environment variable
+	redisActive := strings.ToLower(os.Getenv("REDIS_ACTIVE")) == "true"
+	if !redisActive {
+		log.Println("Redis caching is disabled via REDIS_ACTIVE=false")
+		enabled = false
+		return
+	}
+
 	if redisURL == "" {
 		log.Println("Redis URL not provided, caching disabled")
 		enabled = false
