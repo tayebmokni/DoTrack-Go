@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"go.mongodb.org/mongo-driver/mongo"
-
 	"tracking/internal/api/router"
 	"tracking/internal/cache"
 	"tracking/internal/config"
@@ -21,73 +19,79 @@ import (
 )
 
 func main() {
+	// Setup panic recovery
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Recovered from panic: %v", r)
+			os.Exit(1)
+		}
+	}()
+
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("Starting application...")
+
 	// Load configurations
+	log.Println("Loading configuration...")
 	cfg := config.LoadConfig()
-	mongoConfig := config.NewMongoConfig()
 
 	// Log startup information
-	log.Printf("Starting server with configuration:")
+	log.Printf("Configuration loaded successfully:")
 	log.Printf("Host: %s", cfg.Host)
 	log.Printf("Port: %s", cfg.Port)
 	log.Printf("Base URL: %s", cfg.BaseURL)
 	log.Printf("Test Mode: %v", cfg.TestMode)
-	log.Printf("MongoDB URI: %s", mongoConfig.URI)
 
 	// Initialize Redis if URL is provided
+	log.Println("Initializing Redis...")
 	cache.Initialize(cfg.RedisURL)
 	defer cache.Close()
 
-	// Connect to MongoDB with retries
-	var db *mongo.Database
-	var err error
-	for i := 0; i < 5; i++ {
-		db, err = config.ConnectMongoDB(mongoConfig)
-		if err == nil {
-			break
-		}
-		log.Printf("Failed to connect to MongoDB (attempt %d/5): %v", i+1, err)
-		if i < 4 {
-			time.Sleep(2 * time.Second)
-			continue
-		}
-		log.Printf("Using in-memory storage for test mode")
-		// For test mode, we can continue without MongoDB
-		if !cfg.TestMode {
-			log.Fatalf("Failed to connect to MongoDB after 5 attempts")
-		}
-	}
-
-	if db != nil {
-		log.Printf("Connected to MongoDB database: %s", mongoConfig.Database)
-	}
-
 	// Initialize repositories
+	log.Println("Initializing repositories...")
 	var deviceRepo repository.DeviceRepository
 	var positionRepo repository.PositionRepository
 	var orgMemberRepo repository.OrganizationMemberRepository
 
-	if db != nil {
-		deviceRepo = repository.NewMongoDeviceRepository(db)
-		positionRepo = repository.NewMongoPositionRepository(db)
-		orgMemberRepo = repository.NewMongoOrganizationMemberRepository(db)
-	} else {
-		// Use in-memory repositories for test mode
+	// In test mode, always use in-memory repositories
+	if cfg.TestMode {
+		log.Println("Running in test mode - using in-memory repositories")
 		deviceRepo = repository.NewInMemoryDeviceRepository()
 		positionRepo = repository.NewInMemoryPositionRepository()
 		orgMemberRepo = repository.NewInMemoryOrganizationMemberRepository()
+	} else {
+		// Try to connect to MongoDB
+		mongoConfig := config.NewMongoConfig()
+		log.Printf("Connecting to MongoDB at: %s", mongoConfig.URI)
+
+		db, err := config.ConnectMongoDB(mongoConfig)
+		if err != nil {
+			log.Printf("Failed to connect to MongoDB: %v - falling back to in-memory storage", err)
+			deviceRepo = repository.NewInMemoryDeviceRepository()
+			positionRepo = repository.NewInMemoryPositionRepository()
+			orgMemberRepo = repository.NewInMemoryOrganizationMemberRepository()
+		} else {
+			log.Printf("Successfully connected to MongoDB database: %s", mongoConfig.Database)
+			deviceRepo = repository.NewMongoDeviceRepository(db)
+			positionRepo = repository.NewMongoPositionRepository(db)
+			orgMemberRepo = repository.NewMongoOrganizationMemberRepository(db)
+		}
 	}
 
 	// Initialize services
+	log.Println("Initializing services...")
 	deviceService := service.NewDeviceService(deviceRepo, orgMemberRepo)
 	positionService := service.NewPositionService(positionRepo, deviceRepo, orgMemberRepo)
 
 	// Initialize HTTP router
+	log.Println("Setting up HTTP router...")
 	r := router.NewRouter(deviceService, positionService)
 
 	// Initialize TCP server
+	log.Printf("Initializing TCP server on port %d...", cfg.TCPPort)
 	tcpServer := server.NewTCPServer(cfg.TCPPort, deviceRepo, positionRepo)
 	if err := tcpServer.Start(); err != nil {
-		log.Fatalf("Failed to start TCP server: %v", err)
+		log.Printf("Failed to start TCP server: %v", err)
+		return
 	}
 	defer tcpServer.Stop()
 
@@ -104,8 +108,11 @@ func main() {
 	// Start HTTP server in a goroutine
 	go func() {
 		log.Printf("HTTP server starting on %s", httpServer.Addr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server failed to start: %v", err)
+		if err := httpServer.ListenAndServe(); err != nil {
+			if err != http.ErrServerClosed {
+				log.Printf("HTTP server failed to start: %v", err)
+				os.Exit(1)
+			}
 		}
 	}()
 
@@ -122,6 +129,5 @@ func main() {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 
-	// TCP server is stopped by defer tcpServer.Stop()
 	log.Println("Servers stopped")
 }

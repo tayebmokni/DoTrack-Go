@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/mongo"
@@ -16,9 +18,12 @@ type MongoConfig struct {
 }
 
 func NewMongoConfig() *MongoConfig {
+	// Check if we're in test mode
+	testMode := strings.ToLower(os.Getenv("TEST_MODE")) == "true"
+
 	uri := getEnv("MONGODB_URI", "")
-	if uri == "" {
-		log.Fatal("MONGODB_URI environment variable is required")
+	if uri == "" && !testMode {
+		log.Fatal("MONGODB_URI environment variable is required when not in test mode")
 	}
 
 	return &MongoConfig{
@@ -28,10 +33,14 @@ func NewMongoConfig() *MongoConfig {
 }
 
 func ConnectMongoDB(cfg *MongoConfig) (*mongo.Database, error) {
+	if cfg.URI == "" {
+		return nil, fmt.Errorf("MongoDB URI not provided")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	log.Printf("Connecting to MongoDB at: %s", cfg.URI)
+	log.Printf("Attempting to connect to MongoDB at: %s", cfg.URI)
 
 	clientOptions := options.Client().ApplyURI(cfg.URI)
 	client, err := mongo.Connect(ctx, clientOptions)

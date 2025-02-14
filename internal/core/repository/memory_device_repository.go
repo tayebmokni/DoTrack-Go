@@ -88,6 +88,19 @@ func (r *inMemoryDeviceRepository) FindByUser(userID string) ([]*model.Device, e
 	return result, nil
 }
 
+func (r *inMemoryDeviceRepository) FindByUserID(userID string) ([]*model.Device, error) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	var result []*model.Device
+	for _, device := range r.devices {
+		if device.UserID == userID {
+			result = append(result, device)
+		}
+	}
+	return result, nil
+}
+
 func (r *inMemoryDeviceRepository) FindByOrganization(orgID string) ([]*model.Device, error) {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -99,4 +112,15 @@ func (r *inMemoryDeviceRepository) FindByOrganization(orgID string) ([]*model.De
 		}
 	}
 	return result, nil
+}
+
+func (r *inMemoryDeviceRepository) FindAll() ([]*model.Device, error) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	devices := make([]*model.Device, 0, len(r.devices))
+	for _, device := range r.devices {
+		devices = append(devices, device)
+	}
+	return devices, nil
 }

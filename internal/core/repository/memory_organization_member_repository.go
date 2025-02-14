@@ -43,17 +43,29 @@ func (r *inMemoryOrganizationMemberRepository) Update(member *model.Organization
 	return nil
 }
 
-func (r *inMemoryOrganizationMemberRepository) Delete(userID, orgID string) error {
+func (r *inMemoryOrganizationMemberRepository) Delete(id string) error {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
-	key := fmt.Sprintf("%s:%s", userID, orgID)
-	if _, exists := r.members[key]; !exists {
-		return fmt.Errorf("member not found")
+	for key, member := range r.members {
+		if member.ID == id {
+			delete(r.members, key)
+			return nil
+		}
 	}
+	return fmt.Errorf("member not found")
+}
 
-	delete(r.members, key)
-	return nil
+func (r *inMemoryOrganizationMemberRepository) FindByID(id string) (*model.OrganizationMember, error) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	for _, member := range r.members {
+		if member.ID == id {
+			return member, nil
+		}
+	}
+	return nil, nil
 }
 
 func (r *inMemoryOrganizationMemberRepository) FindByUserAndOrg(userID, orgID string) (*model.OrganizationMember, error) {
@@ -65,6 +77,19 @@ func (r *inMemoryOrganizationMemberRepository) FindByUserAndOrg(userID, orgID st
 		return member, nil
 	}
 	return nil, nil
+}
+
+func (r *inMemoryOrganizationMemberRepository) FindByOrganization(orgID string) ([]*model.OrganizationMember, error) {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+
+	var result []*model.OrganizationMember
+	for _, member := range r.members {
+		if member.OrganizationID == orgID {
+			result = append(result, member)
+		}
+	}
+	return result, nil
 }
 
 func (r *inMemoryOrganizationMemberRepository) FindByUser(userID string) ([]*model.OrganizationMember, error) {
