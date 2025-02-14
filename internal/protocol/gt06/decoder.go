@@ -22,44 +22,6 @@ var (
 	ErrMalformedPacket    = errors.New("malformed packet structure")
 )
 
-type Decoder struct {
-	debug bool
-}
-
-func NewDecoder() *Decoder {
-	return &Decoder{
-		debug: false,
-	}
-}
-
-// EnableDebug enables detailed logging for protocol parsing
-func (d *Decoder) EnableDebug(enable bool) {
-	d.debug = enable
-}
-
-// logDebug logs debug messages if debug mode is enabled
-func (d *Decoder) logDebug(format string, v ...interface{}) {
-	if d.debug {
-		log.Printf("[GT06] "+format, v...)
-	}
-}
-
-// logPacket logs packet details in hexadecimal format
-func (d *Decoder) logPacket(data []byte, prefix string) {
-	if !d.debug {
-		return
-	}
-
-	var hexStr string
-	for i, b := range data {
-		if i > 0 && i%16 == 0 {
-			hexStr += "\n        "
-		}
-		hexStr += fmt.Sprintf("%02x ", b)
-	}
-	d.logDebug("%s Packet [%d bytes]:\n        %s", prefix, len(data), hexStr)
-}
-
 // GT06 protocol constants
 const (
 	startByte1 = 0x78
@@ -68,7 +30,7 @@ const (
 	endByte1   = 0x0D
 	endByte2   = 0x0A
 
-	// Command types
+	// Message types
 	loginMsg    = 0x01
 	locationMsg = 0x12
 	statusMsg   = 0x13
@@ -89,39 +51,77 @@ const (
 	overspeedAlarm  = 0x40
 )
 
-// Fix packet length calculation and checksum validation
+type Decoder struct {
+	debug bool
+}
+
+func NewDecoder() *Decoder {
+	return &Decoder{
+		debug: false,
+	}
+}
+
+func (d *Decoder) EnableDebug(enable bool) {
+	d.debug = enable
+}
+
+func (d *Decoder) logDebug(format string, v ...interface{}) {
+	if d.debug {
+		log.Printf("[GT06] "+format, v...)
+	}
+}
+
+func (d *Decoder) logPacket(data []byte, prefix string) {
+	if !d.debug {
+		return
+	}
+
+	var hexStr string
+	for i, b := range data {
+		if i > 0 && i%16 == 0 {
+			hexStr += "\n        "
+		}
+		hexStr += fmt.Sprintf("%02x ", b)
+	}
+	d.logDebug("%s Packet [%d bytes]:\n        %s", prefix, len(data), hexStr)
+}
+
+// Decode implements the GT06 protocol decoder
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode...")
 	d.logPacket(data, "Received")
 
-	// Check minimum length
+	// 1. Basic length check
 	if len(data) < minLength {
 		return nil, fmt.Errorf("%w: got %d bytes, need at least %d",
 			ErrPacketTooShort, len(data), minLength)
 	}
 
-	// Validate start bytes
+	// 2. Validate start bytes
 	if data[0] != startByte1 || data[1] != startByte2 {
 		return nil, fmt.Errorf("%w: expected 0x%02x%02x, got 0x%02x%02x",
 			ErrInvalidHeader, startByte1, startByte2, data[0], data[1])
 	}
 
-	// Get packet length (includes protocol number and payload, excludes length byte itself)
-	packetLength := int(data[2])
-	d.logDebug("Packet length: %d", packetLength)
+	// 3. Get content length byte (includes protocol number)
+	contentLen := int(data[2])
+	d.logDebug("Content length byte: %d", contentLen)
 
-	// Calculate total expected length
-	expectedLength := 2 + 1 + packetLength + 2 + 2 // start(2) + len(1) + payload(n) + crc(2) + end(2)
-	if len(data) != expectedLength {
-		return nil, fmt.Errorf("%w: payload=%d, total=%d, expected=%d",
-			ErrInvalidLength, packetLength, len(data), expectedLength)
+	// 4. Calculate expected packet length
+	// Total = start(2) + length(1) + content(contentLen) + checksum(2) + end(2)
+	expectedTotal := 2 + 1 + contentLen + 2 + 2
+
+	// 5. Validate total length
+	if len(data) != expectedTotal {
+		return nil, fmt.Errorf("%w: got %d bytes, expected %d (content=%d)",
+			ErrInvalidLength, len(data), expectedTotal, contentLen)
 	}
 
-	// Get protocol number
+	// 6. Get protocol number
 	protocolNumber := data[3]
 	d.logDebug("Protocol number: 0x%02x", protocolNumber)
 
-	// Validate protocol number
+	// 7. Validate protocol number
 	switch protocolNumber {
 	case loginMsg, locationMsg, statusMsg, alarmMsg:
 		// Valid protocol numbers
@@ -129,26 +129,32 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
-	// Extract payload (excluding start, length, and protocol)
-	payloadStart := 4 // After start(2) + len(1) + protocol(1)
-	payloadEnd := len(data) - 4 // Before crc(2) + end(2)
+	// 8. Extract payload (excluding protocol number)
+	payloadStart := 4 // After start(2) + length(1) + protocol(1)
+	payloadEnd := payloadStart + contentLen - 1 // -1 for protocol byte
 	payload := data[payloadStart:payloadEnd]
+	d.logDebug("Payload length: %d bytes", len(payload))
 
-	// Calculate and verify checksum
-	calculatedChecksum := calculateChecksum(data[2:payloadEnd]) // Include length byte in checksum
-	packetChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
-	if calculatedChecksum != packetChecksum {
-		return nil, fmt.Errorf("%w: calculated=0x%04x, received=0x%04x",
-			ErrInvalidChecksum, calculatedChecksum, packetChecksum)
+	// 9. Calculate checksum over length byte through payload
+	checksumData := data[2:payloadEnd] // Include length byte and all content
+	calculatedChecksum := calculateChecksum(checksumData)
+	receivedChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
+
+	d.logDebug("Checksum validation: data_len=%d, calc=0x%04x, recv=0x%04x",
+		len(checksumData), calculatedChecksum, receivedChecksum)
+
+	if calculatedChecksum != receivedChecksum {
+		return nil, fmt.Errorf("%w: calc=0x%04x, recv=0x%04x",
+			ErrInvalidChecksum, calculatedChecksum, receivedChecksum)
 	}
 
-	// Verify end bytes
-	if data[len(data)-2] != endByte1 || data[len(data)-1] != endByte2 {
-		return nil, fmt.Errorf("%w: invalid end bytes 0x%02x%02x",
-			ErrMalformedPacket, data[len(data)-2], data[len(data)-1])
+	// 10. Verify end bytes
+	endStart := payloadEnd + 2 // After payload and checksum
+	if data[endStart] != endByte1 || data[endStart+1] != endByte2 {
+		return nil, fmt.Errorf("%w: invalid end bytes", ErrMalformedPacket)
 	}
 
-	// Process packet based on protocol number
+	// 11. Process packet based on protocol number
 	var result *GT06Data
 	var err error
 
@@ -171,6 +177,7 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 		return nil, fmt.Errorf("error decoding message type 0x%02x: %w", protocolNumber, err)
 	}
 
+	d.logDebug("Successfully decoded packet: %+v", result)
 	return result, nil
 }
 
@@ -375,8 +382,8 @@ func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 }
 
 func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
-	if len(data) < 1 {
-		return nil, fmt.Errorf("status message too short")
+	if len(data) < 4 {
+		return nil, fmt.Errorf("%w: status message too short", ErrInvalidLength)
 	}
 
 	result := &GT06Data{
@@ -384,64 +391,23 @@ func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
 		Status: make(map[string]interface{}),
 	}
 
+	// First byte contains power and GSM signal levels
 	statusByte := data[0]
 	result.PowerLevel = (statusByte >> 4) & 0x0F
 	result.GSMSignal = statusByte & 0x0F
 
+	// Validate power level (0-15)
+	if result.PowerLevel > 15 {
+		return nil, fmt.Errorf("%w: invalid power level %d", ErrMalformedPacket, result.PowerLevel)
+	}
+
+	// Add status fields
 	result.Status["powerLevel"] = result.PowerLevel
 	result.Status["gsmSignal"] = result.GSMSignal
 	result.Status["charging"] = (statusByte&0x20 != 0)
 	result.Status["engineOn"] = (statusByte&0x40 != 0)
 
 	return result, nil
-}
-
-func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
-	result := &GT06Data{
-		Valid:  true,
-		Status: make(map[string]interface{}),
-	}
-
-	if len(data) < 8 {
-		return nil, fmt.Errorf("login message too short")
-	}
-
-	// Extract IMEI from payload
-	result.Status["imei"] = fmt.Sprintf("%x", data[:8])
-
-	return result, nil
-}
-
-func bcdToFloat(bcd uint32) (float64, error) {
-	// Convert BCD to binary values for each digit
-	d1 := (bcd >> 28) & 0x0F
-	d2 := (bcd >> 24) & 0x0F
-	d3 := (bcd >> 20) & 0x0F
-	d4 := (bcd >> 16) & 0x0F
-	d5 := (bcd >> 12) & 0x0F
-	d6 := (bcd >> 8) & 0x0F
-	d7 := (bcd >> 4) & 0x0F
-	d8 := bcd & 0x0F
-
-	// Validate BCD digits
-	for _, digit := range []uint32{d1, d2, d3, d4, d5, d6, d7, d8} {
-		if digit > 9 {
-			return 0, ErrInvalidCoordinate
-		}
-	}
-
-	// Combine BCD digits into degrees and minutes
-	degrees := float64(d1*10 + d2)
-	minutes := float64(d3*10+d4) + float64(d5)/10.0 + float64(d6)/100.0 +
-		float64(d7)/1000.0 + float64(d8)/10000.0
-
-	// Validate ranges
-	if degrees > 90 || minutes >= 60 {
-		return 0, ErrInvalidCoordinate
-	}
-
-	// Convert to decimal degrees
-	return degrees + minutes/60.0, nil
 }
 
 func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
@@ -476,6 +442,56 @@ func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
 	}
 
 	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
+}
+
+func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
+	if len(data) < 8 {
+		return nil, fmt.Errorf("login message too short")
+	}
+
+	// Extract IMEI from payload
+	result.Status["imei"] = fmt.Sprintf("%x", data[:8])
+
+	return result, nil
+}
+
+func bcdToFloat(bcd uint32) (float64, error) {
+	// Extract BCD digits
+	d1 := (bcd >> 28) & 0x0F
+	d2 := (bcd >> 24) & 0x0F
+	d3 := (bcd >> 20) & 0x0F
+	d4 := (bcd >> 16) & 0x0F
+	d5 := (bcd >> 12) & 0x0F
+	d6 := (bcd >> 8) & 0x0F
+	d7 := (bcd >> 4) & 0x0F
+	d8 := bcd & 0x0F
+
+	// Validate each BCD digit
+	for i, digit := range []uint32{d1, d2, d3, d4, d5, d6, d7, d8} {
+		if digit > 9 {
+			return 0, fmt.Errorf("%w: invalid BCD digit %d at position %d",
+				ErrInvalidCoordinate, digit, i+1)
+		}
+	}
+
+	// Convert to degrees and minutes
+	degrees := float64(d1*10 + d2)
+	minutes := float64(d3*10) + float64(d4) +
+		float64(d5)/10.0 + float64(d6)/100.0 +
+		float64(d7)/1000.0 + float64(d8)/10000.0
+
+	// Validate ranges
+	if degrees > 90 || minutes >= 60 {
+		return 0, fmt.Errorf("%w: invalid values (deg=%.0f, min=%.4f)",
+			ErrInvalidCoordinate, degrees, minutes)
+	}
+
+	return degrees + (minutes / 60.0), nil
 }
 
 func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
