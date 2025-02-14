@@ -34,17 +34,35 @@ type TCPServer struct {
 	teltonikaDecoder *teltonika.Decoder
 	connections      map[string]*DeviceConnection
 	mutex            sync.RWMutex
+	debug            bool
 }
 
 func NewTCPServer(port int, deviceRepo repository.DeviceRepository, positionRepo repository.PositionRepository) *TCPServer {
+	gt06Decoder := gt06.NewDecoder()
+	gt06Decoder.EnableDebug(true) // Enable debug logging for GT06
+
 	return &TCPServer{
 		port:             port,
 		deviceRepo:       deviceRepo,
 		positionRepo:     positionRepo,
-		gt06Decoder:      gt06.NewDecoder(),
+		gt06Decoder:      gt06Decoder,
 		h02Decoder:       h02.NewDecoder(),
 		teltonikaDecoder: teltonika.NewDecoder(),
 		connections:      make(map[string]*DeviceConnection),
+		debug:            true, // Enable debug logging by default
+	}
+}
+
+// EnableDebug enables or disables debug logging
+func (s *TCPServer) EnableDebug(enable bool) {
+	s.debug = enable
+	s.gt06Decoder.EnableDebug(enable)
+	// Add similar debug toggles for other protocol decoders when implemented
+}
+
+func (s *TCPServer) logDebug(format string, v ...interface{}) {
+	if s.debug {
+		log.Printf("[TCP Server] "+format, v...)
 	}
 }
 
@@ -55,8 +73,8 @@ func (s *TCPServer) Start() error {
 		return fmt.Errorf("failed to start TCP server: %v", err)
 	}
 
-	log.Printf("TCP server listening on port %d", s.port)
-	log.Printf("Supported protocols: GT06, H02, Teltonika")
+	s.logDebug("TCP server listening on port %d", s.port)
+	s.logDebug("Supported protocols: GT06, H02, Teltonika")
 
 	go s.acceptConnections()
 	return nil
@@ -83,7 +101,7 @@ func (s *TCPServer) acceptConnections() {
 			if strings.Contains(err.Error(), "use of closed network connection") {
 				return
 			}
-			log.Printf("Error accepting connection: %v", err)
+			s.logDebug("Error accepting connection: %v", err)
 			continue
 		}
 
@@ -118,7 +136,7 @@ func (s *TCPServer) authenticateDevice(data []byte, protocol string) (*model.Dev
 
 	// Check if it's a test device
 	if strings.HasPrefix(deviceID, "test-") || strings.HasPrefix(deviceID, "demo-") {
-		log.Printf("Accepting test device: %s", deviceID)
+		s.logDebug("Accepting test device: %s", deviceID)
 		return &model.Device{
 			ID:         deviceID,
 			Name:       "Test Device",
@@ -146,7 +164,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
-	log.Printf("New connection from %s", remoteAddr)
+	s.logDebug("New connection from %s", remoteAddr)
 
 	deviceConn := &DeviceConnection{
 		conn:          conn,
@@ -158,19 +176,19 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 		n, err := conn.Read(buffer)
 		if err != nil {
 			if err != io.EOF {
-				log.Printf("Error reading from connection: %v", err)
+				s.logDebug("Error reading from connection: %v", err)
 			}
 			if deviceConn.deviceID != "" {
 				s.mutex.Lock()
 				delete(s.connections, deviceConn.deviceID)
 				s.mutex.Unlock()
-				log.Printf("Device disconnected: %s", deviceConn.deviceID)
+				s.logDebug("Device disconnected: %s", deviceConn.deviceID)
 			}
 			return
 		}
 
 		data := buffer[:n]
-		log.Printf("Received %d bytes from %s", n, remoteAddr)
+		s.logDebug("Received %d bytes from %s", n, remoteAddr)
 
 		// Detect protocol and handle authentication
 		var protocol string
@@ -185,7 +203,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 		if !deviceConn.authenticated {
 			device, err := s.authenticateDevice(data, protocol)
 			if err != nil {
-				log.Printf("Authentication failed for %s: %v", remoteAddr, err)
+				s.logDebug("Authentication failed for %s: %v", remoteAddr, err)
 				return
 			}
 
@@ -198,7 +216,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 			s.connections[device.ID] = deviceConn
 			s.mutex.Unlock()
 
-			log.Printf("Device authenticated: %s (%s)", device.ID, protocol)
+			s.logDebug("Device authenticated: %s (%s)", device.ID, protocol)
 
 			// Send authentication response based on protocol
 			var response []byte
@@ -212,7 +230,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 			}
 
 			if _, err := conn.Write(response); err != nil {
-				log.Printf("Error sending auth response to %s: %v", device.ID, err)
+				s.logDebug("Error sending auth response to %s: %v", device.ID, err)
 				return
 			}
 
@@ -256,14 +274,14 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 		}
 
 		if processErr != nil {
-			log.Printf("Error processing data from %s: %v", deviceConn.deviceID, processErr)
+			s.logDebug("Error processing data from %s: %v", deviceConn.deviceID, processErr)
 			continue
 		}
 
 		// Store position and update device status if position is valid
 		if position != nil {
 			if err := s.positionRepo.Create(position); err != nil {
-				log.Printf("Error storing position for device %s: %v", deviceConn.deviceID, err)
+				s.logDebug("Error storing position for device %s: %v", deviceConn.deviceID, err)
 			} else {
 				// Update device's last position and status
 				device, err := s.deviceRepo.FindByID(deviceConn.deviceID)
@@ -272,7 +290,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 					device.LastUpdate = position.Timestamp
 					device.Status = "active"
 					if err := s.deviceRepo.Update(device); err != nil {
-						log.Printf("Error updating device status: %v", err)
+						s.logDebug("Error updating device status: %v", err)
 					}
 				}
 			}
@@ -281,7 +299,7 @@ func (s *TCPServer) handleConnection(conn net.Conn) {
 		// Send response to device
 		if response != nil {
 			if _, err := conn.Write(response); err != nil {
-				log.Printf("Error sending response to %s: %v", deviceConn.deviceID, err)
+				s.logDebug("Error sending response to %s: %v", deviceConn.deviceID, err)
 				continue
 			}
 		}

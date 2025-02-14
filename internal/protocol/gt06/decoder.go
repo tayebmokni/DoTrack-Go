@@ -5,14 +5,139 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 	"tracking/internal/core/model"
 )
 
-type Decoder struct{}
+// Common GT06 errors
+var (
+	ErrInvalidHeader     = errors.New("invalid GT06 protocol header")
+	ErrPacketTooShort    = errors.New("data too short for GT06 protocol")
+	ErrInvalidChecksum   = errors.New("invalid checksum")
+	ErrInvalidCoordinate = errors.New("invalid BCD coordinate value")
+	ErrInvalidTimestamp  = errors.New("invalid timestamp values")
+)
+
+type Decoder struct {
+	debug bool
+}
 
 func NewDecoder() *Decoder {
-	return &Decoder{}
+	return &Decoder{
+		debug: false,
+	}
+}
+
+// EnableDebug enables detailed logging for protocol parsing
+func (d *Decoder) EnableDebug(enable bool) {
+	d.debug = enable
+}
+
+// logDebug logs debug messages if debug mode is enabled
+func (d *Decoder) logDebug(format string, v ...interface{}) {
+	if d.debug {
+		log.Printf("[GT06] "+format, v...)
+	}
+}
+
+func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
+	if len(data) < minLength {
+		return nil, fmt.Errorf("%w: got %d bytes, need at least %d", ErrPacketTooShort, len(data), minLength)
+	}
+
+	d.logDebug("Decoding packet of length %d", len(data))
+
+	if data[0] != startByte1 || data[1] != startByte2 {
+		return nil, fmt.Errorf("%w: expected 0x%02x%02x, got 0x%02x%02x",
+			ErrInvalidHeader, startByte1, startByte2, data[0], data[1])
+	}
+
+	if !d.validateChecksum(data) {
+		return nil, ErrInvalidChecksum
+	}
+
+	reader := bytes.NewReader(data[3:])
+	var protocolNumber uint8
+	if err := binary.Read(reader, binary.BigEndian, &protocolNumber); err != nil {
+		return nil, fmt.Errorf("failed to read protocol number: %w", err)
+	}
+
+	d.logDebug("Protocol number: 0x%02x", protocolNumber)
+
+	// Process based on message type
+	switch protocolNumber {
+	case loginMsg:
+		d.logDebug("Processing login message")
+		return d.decodeLoginMessage(reader)
+	case locationMsg:
+		d.logDebug("Processing location message")
+		return d.decodeLocationMessage(reader)
+	case statusMsg:
+		d.logDebug("Processing status message")
+		return d.decodeStatusMessage(reader)
+	case alarmMsg:
+		d.logDebug("Processing alarm message")
+		return d.decodeAlarmMessage(reader)
+	default:
+		return nil, fmt.Errorf("unsupported message type: %02x", protocolNumber)
+	}
+}
+
+func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error) {
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
+	var statusByte uint8
+	if err := binary.Read(reader, binary.BigEndian, &statusByte); err != nil {
+		return nil, fmt.Errorf("failed to read status byte: %w", err)
+	}
+
+	result.GPSValid = (statusByte&0x01) == 0x01
+	result.Satellites = (statusByte >> 2) & 0x0F
+
+	d.logDebug("GPS Valid: %v, Satellites: %d", result.GPSValid, result.Satellites)
+
+	var rawLat, rawLon uint32
+	if err := binary.Read(reader, binary.BigEndian, &rawLat); err != nil {
+		return nil, fmt.Errorf("failed to read latitude: %w", err)
+	}
+	if err := binary.Read(reader, binary.BigEndian, &rawLon); err != nil {
+		return nil, fmt.Errorf("failed to read longitude: %w", err)
+	}
+
+	var err error
+	if result.Latitude, err = bcdToFloat(rawLat); err != nil {
+		return nil, fmt.Errorf("invalid latitude (0x%08x): %w", rawLat, err)
+	}
+	if result.Longitude, err = bcdToFloat(rawLon); err != nil {
+		return nil, fmt.Errorf("invalid longitude (0x%08x): %w", rawLon, err)
+	}
+
+	d.logDebug("Position: %.6f, %.6f", result.Latitude, result.Longitude)
+
+	var speed uint8
+	if err := binary.Read(reader, binary.BigEndian, &speed); err != nil {
+		return nil, fmt.Errorf("failed to read speed: %w", err)
+	}
+	result.Speed = float64(speed)
+
+	var course uint16
+	if err := binary.Read(reader, binary.BigEndian, &course); err != nil {
+		return nil, fmt.Errorf("failed to read course: %w", err)
+	}
+	result.Course = float64(course)
+
+	d.logDebug("Speed: %.1f, Course: %.1f", result.Speed, result.Course)
+
+	if result.Timestamp, err = d.parseTimestamp(reader); err != nil {
+		return nil, fmt.Errorf("failed to parse timestamp: %w", err)
+	}
+
+	d.logDebug("Timestamp: %v", result.Timestamp)
+	return result, nil
 }
 
 type GT06Data struct {
@@ -143,89 +268,6 @@ func calculateCRC(data []byte) uint16 {
 	return crc
 }
 
-func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
-	if len(data) < minLength {
-		return nil, errors.New("data too short for GT06 protocol")
-	}
-
-	if data[0] != startByte1 || data[1] != startByte2 {
-		return nil, errors.New("invalid GT06 protocol header")
-	}
-
-	if !d.validateChecksum(data) {
-		return nil, errors.New("invalid checksum")
-	}
-
-	reader := bytes.NewReader(data[3:])
-	var protocolNumber uint8
-	if err := binary.Read(reader, binary.BigEndian, &protocolNumber); err != nil {
-		return nil, err
-	}
-
-	// Process based on message type
-	switch protocolNumber {
-	case loginMsg:
-		return d.decodeLoginMessage(reader)
-	case locationMsg:
-		return d.decodeLocationMessage(reader)
-	case statusMsg:
-		return d.decodeStatusMessage(reader)
-	case alarmMsg:
-		return d.decodeAlarmMessage(reader)
-	default:
-		return nil, fmt.Errorf("unsupported message type: %02x", protocolNumber)
-	}
-}
-
-func (d *Decoder) decodeLocationMessage(reader *bytes.Reader) (*GT06Data, error) {
-	result := &GT06Data{
-		Valid:  true,
-		Status: make(map[string]interface{}),
-	}
-
-	var statusByte uint8
-	if err := binary.Read(reader, binary.BigEndian, &statusByte); err != nil {
-		return nil, err
-	}
-
-	result.GPSValid = (statusByte&0x01) == 0x01
-	result.Satellites = (statusByte >> 2) & 0x0F
-
-	var rawLat, rawLon uint32
-	if err := binary.Read(reader, binary.BigEndian, &rawLat); err != nil {
-		return nil, err
-	}
-	if err := binary.Read(reader, binary.BigEndian, &rawLon); err != nil {
-		return nil, err
-	}
-
-	var err error
-	if result.Latitude, err = bcdToFloat(rawLat); err != nil {
-		return nil, fmt.Errorf("invalid latitude: %v", err)
-	}
-	if result.Longitude, err = bcdToFloat(rawLon); err != nil {
-		return nil, fmt.Errorf("invalid longitude: %v", err)
-	}
-
-	var speed uint8
-	if err := binary.Read(reader, binary.BigEndian, &speed); err != nil {
-		return nil, err
-	}
-	result.Speed = float64(speed)
-
-	var course uint16
-	if err := binary.Read(reader, binary.BigEndian, &course); err != nil {
-		return nil, err
-	}
-	result.Course = float64(course)
-
-	result.Timestamp, err = d.parseTimestamp(reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse timestamp: %v", err)
-	}
-
-	return result, nil
-}
 
 func (d *Decoder) decodeAlarmMessage(reader *bytes.Reader) (*GT06Data, error) {
 	locationData, err := d.decodeLocationMessage(reader)
@@ -324,7 +366,7 @@ func bcdToFloat(bcd uint32) (float64, error) {
 		(float64((bcd>>4)&0xF)*10 + float64(bcd&0xF))/100.0
 
 	if deg > 90 || min >= 60 {
-		return 0, errors.New("invalid BCD coordinate value")
+		return 0, ErrInvalidCoordinate
 	}
 
 	return deg + (min / 60.0), nil
@@ -345,7 +387,7 @@ func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
 
 	if month < 1 || month > 12 || day < 1 || day > 31 ||
 		hour > 23 || minute > 59 || second > 59 {
-		return time.Time{}, errors.New("invalid timestamp values")
+		return time.Time{}, ErrInvalidTimestamp
 	}
 
 	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
