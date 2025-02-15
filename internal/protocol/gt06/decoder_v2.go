@@ -1,8 +1,8 @@
+// Package gt06 implements the GT06 protocol decoder (alternate implementation)
 package gt06
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"time"
@@ -26,6 +26,21 @@ func (d *DecoderV2) logDebug(format string, v ...interface{}) {
 	if d.debug {
 		log.Printf("[GT06v2] "+format, v...)
 	}
+}
+
+func (d *DecoderV2) logPacket(data []byte, prefix string) {
+	if !d.debug {
+		return
+	}
+
+	var hexStr string
+	for i, b := range data {
+		if i > 0 && i%16 == 0 {
+			hexStr += "\n        "
+		}
+		hexStr += fmt.Sprintf("%02x ", b)
+	}
+	d.logDebug("%s Packet [%d bytes]:\n        %s", prefix, len(data), hexStr)
 }
 
 type packetHeader struct {
@@ -55,8 +70,8 @@ func (d *DecoderV2) validatePacket(header *packetHeader, data []byte) error {
 	}
 
 	checksumPos := len(data) - 4
-	calcChecksum := calculateChecksum(data[2:checksumPos])
-	recvChecksum := binary.BigEndian.Uint16(data[checksumPos:])
+	calcChecksum := CalculateChecksum(data[2:checksumPos])
+	recvChecksum := uint16(data[checksumPos])<<8 | uint16(data[checksumPos+1])
 
 	if calcChecksum != recvChecksum {
 		return fmt.Errorf("%w: calc=0x%04x, recv=0x%04x",
@@ -116,7 +131,7 @@ func (d *DecoderV2) Decode(data []byte) (*GT06Data, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode %s message: %w",
-			getMessageTypeName(header.protocol), err)
+			GetMessageTypeName(header.protocol), err)
 	}
 
 	return result, nil
@@ -124,7 +139,7 @@ func (d *DecoderV2) Decode(data []byte) (*GT06Data, error) {
 
 func (d *DecoderV2) decodeLocationMessage(data []byte) (*GT06Data, error) {
 	if len(data) < 10 {
-		return nil, fmt.Errorf("location message too short: need 10 bytes")
+		return nil, fmt.Errorf("location message too short: got %d bytes, need 10", len(data))
 	}
 
 	result := &GT06Data{
@@ -137,21 +152,20 @@ func (d *DecoderV2) decodeLocationMessage(data []byte) (*GT06Data, error) {
 	result.Satellites = int((statusByte >> 2) & 0x0F)
 
 	var err error
-	if result.Latitude, err = bcdToFloat(binary.BigEndian.Uint32(data[1:5])); err != nil {
+	if result.Latitude, err = BcdToFloat(uint32(data[1])<<24 | uint32(data[2])<<16 | uint32(data[3])<<8 | uint32(data[4])); err != nil {
 		return nil, fmt.Errorf("invalid latitude: %w", err)
 	}
-	if result.Longitude, err = bcdToFloat(binary.BigEndian.Uint32(data[5:9])); err != nil {
+	if result.Longitude, err = BcdToFloat(uint32(data[5])<<24 | uint32(data[6])<<16 | uint32(data[7])<<8 | uint32(data[8])); err != nil {
 		return nil, fmt.Errorf("invalid longitude: %w", err)
 	}
 
 	result.Speed = float64(data[9])
 	if len(data) >= 11 {
-		result.Course = float64(binary.BigEndian.Uint16(data[10:12]))
+		result.Course = float64(uint16(data[10])<<8 | uint16(data[11]))
 	}
 
 	if len(data) >= 16 {
-		reader := bytes.NewReader(data[12:18])
-		if ts, err := parseTimestamp(reader); err == nil {
+		if ts, err := ParseTimestamp(bytes.NewReader(data[12:18])); err == nil {
 			result.Timestamp = ts
 		}
 	}
@@ -209,26 +223,9 @@ func (d *DecoderV2) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 	}
 
 	alarmType := data[len(data)-1]
-	switch alarmType {
-	case SosAlarm:
-		locationData.Alarm = "sos"
-	case PowerCutAlarm:
-		locationData.Alarm = "powerCut"
-	case VibrationAlarm:
-		locationData.Alarm = "vibration"
-	case FenceInAlarm:
-		locationData.Alarm = "geofenceEnter"
-	case FenceOutAlarm:
-		locationData.Alarm = "geofenceExit"
-	case LowBatteryAlarm:
-		locationData.Alarm = "lowBattery"
-	case OverspeedAlarm:
-		locationData.Alarm = "overspeed"
-	default:
-		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
-	}
-
+	locationData.Alarm = GetAlarmName(alarmType)
 	locationData.Status["alarm"] = locationData.Alarm
+
 	return locationData, nil
 }
 
@@ -262,8 +259,7 @@ func (d *DecoderV2) ToPosition(deviceID string, data *GT06Data) *model.Position 
 	return position
 }
 
-// Helper functions
-func parseTimestamp(reader *bytes.Reader) (time.Time, error) {
+func ParseTimestamp(reader *bytes.Reader) (time.Time, error) {
 	var timeBytes [6]byte
 	if _, err := reader.Read(timeBytes[:]); err != nil {
 		return time.Time{}, err
@@ -284,18 +280,7 @@ func parseTimestamp(reader *bytes.Reader) (time.Time, error) {
 	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
 }
 
-func bcdToDec(b byte) int {
-	return int(b>>4)*10 + int(b&0x0F)
-}
-
-func bcdToFloat(bcd uint32) (float64, error) {
-	degrees := float64(bcdToDec(byte(bcd>>24)))*10 +
-		float64(bcdToDec(byte((bcd>>16)&0xFF)))/60 +
-		float64(bcdToDec(byte((bcd>>8)&0xFF)))/3600
-	return degrees, nil
-}
-
-func getAlarmName(alarmType byte) string {
+func GetAlarmName(alarmType byte) string {
 	switch alarmType {
 	case SosAlarm:
 		return "sos"
@@ -316,7 +301,7 @@ func getAlarmName(alarmType byte) string {
 	}
 }
 
-func getMessageTypeName(messageType byte) string {
+func GetMessageTypeName(messageType byte) string {
 	switch messageType {
 	case LoginMsg:
 		return "login"
@@ -372,10 +357,21 @@ var ErrInvalidChecksum = fmt.Errorf("invalid checksum")
 var ErrMalformedPacket = fmt.Errorf("malformed packet")
 var ErrInvalidTimestamp = fmt.Errorf("invalid timestamp")
 
-func calculateChecksum(data []byte) uint16 {
+func CalculateChecksum(data []byte) uint16 {
 	sum := uint16(0)
 	for _, b := range data {
 		sum += uint16(b)
 	}
 	return sum
+}
+
+func BcdToFloat(bcd uint32) (float64, error) {
+	degrees := float64(BcdToDec(byte(bcd>>24)))*10 +
+		float64(BcdToDec(byte((bcd>>16)&0xFF)))/60 +
+		float64(BcdToDec(byte((bcd>>8)&0xFF)))/3600
+	return degrees, nil
+}
+
+func BcdToDec(b byte) int {
+	return int(b>>4)*10 + int(b&0x0F)
 }
