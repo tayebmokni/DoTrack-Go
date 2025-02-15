@@ -1,3 +1,4 @@
+// Package gt06 implements the GT06 GPS protocol decoder
 package gt06
 
 import (
@@ -22,35 +23,42 @@ var (
 	ErrMalformedPacket    = errors.New("malformed packet structure")
 )
 
-// GT06 protocol constants
+// Protocol constants
 const (
-	startByte1 = 0x78
-	startByte2 = 0x78
-	minLength  = 10 // Minimum length: start(2) + length(1) + protocol(1) + content(1) + checksum(2) + end(2)
-	endByte1   = 0x0D
-	endByte2   = 0x0A
+	// Packet markers
+	StartByte1 = 0x78
+	StartByte2 = 0x78
+	EndByte1   = 0x0D
+	EndByte2   = 0x0A
 
 	// Message types
-	loginMsg    = 0x01
-	locationMsg = 0x12
-	statusMsg   = 0x13
-	alarmMsg    = 0x16
+	LoginMsg    = 0x01
+	LocationMsg = 0x12
+	StatusMsg   = 0x13
+	AlarmMsg    = 0x16
 
-	// Minimum content lengths (excluding protocol number)
-	loginMinLen    = 1  // IMEI (1+)
-	locationMinLen = 10 // GPS data(10)
-	statusMinLen   = 4  // Status(4)
-	alarmMinLen    = 11 // GPS data(10) + Alarm type(1)
+	// Alarm types
+	SosAlarm        = 0x01
+	PowerCutAlarm   = 0x02
+	VibrationAlarm  = 0x03
+	FenceInAlarm    = 0x04
+	FenceOutAlarm   = 0x05
+	LowBatteryAlarm = 0x06
+	OverspeedAlarm  = 0x07
+
+	// Response types
+	LoginResp    = 0x01
+	LocationResp = 0x12
+	AlarmResp    = 0x16
 )
 
+// Decoder implements the GT06 protocol decoder
 type Decoder struct {
 	debug bool
 }
 
 func NewDecoder() *Decoder {
-	return &Decoder{
-		debug: false,
-	}
+	return &Decoder{debug: false}
 }
 
 func (d *Decoder) EnableDebug(enable bool) {
@@ -81,138 +89,94 @@ func (d *Decoder) logPacket(data []byte, prefix string) {
 // Decode implements the GT06 protocol decoder
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode...")
-	d.logPacket(data, "Received")
 
-	// 1. Basic length check
-	if len(data) < minLength {
-		return nil, fmt.Errorf("%w: got %d bytes, need at least %d",
-			ErrPacketTooShort, len(data), minLength)
+	if len(data) < 7 {
+		return nil, fmt.Errorf("%w: packet requires at least 7 bytes", ErrPacketTooShort)
 	}
 
-	// 2. Validate start bytes
-	if data[0] != startByte1 || data[1] != startByte2 {
+	// Validate start bytes
+	if data[0] != StartByte1 || data[1] != StartByte2 {
 		return nil, fmt.Errorf("%w: expected 0x%02x%02x, got 0x%02x%02x",
-			ErrInvalidHeader, startByte1, startByte2, data[0], data[1])
+			ErrInvalidHeader, StartByte1, StartByte2, data[0], data[1])
 	}
 
-	// 3. Get content length byte (includes protocol number)
-	contentLen := int(data[2])
-	d.logDebug("Content length byte: %d", contentLen)
-
-	// 4. Calculate total packet length
-	// Total = start(2) + length(1) + content(contentLen) + checksum(2) + end(2)
-	expectedTotal := 2 + 1 + contentLen + 2 + 2
-
-	// 5. Validate total length
-	if len(data) != expectedTotal {
-		return nil, fmt.Errorf("%w: got %d bytes, need %d",
-			ErrInvalidLength, len(data), expectedTotal)
-	}
-
-	// 6. Get protocol number and validate minimum length
+	// Get protocol number
 	protocolNumber := data[3]
 	d.logDebug("Protocol number: 0x%02x", protocolNumber)
 
-	// Calculate actual content length (excluding protocol byte)
-	actualContentLen := contentLen - 1
-
-	// 7. Validate protocol-specific minimum length
-	var minContentLen int
+	// Validate length based on protocol
+	var minLength int
 	switch protocolNumber {
-	case loginMsg:
-		minContentLen = loginMinLen
-	case locationMsg:
-		minContentLen = locationMinLen
-	case statusMsg:
-		minContentLen = statusMinLen
-	case alarmMsg:
-		minContentLen = alarmMinLen
+	case LoginMsg:
+		minLength = 15 // start(2) + len(1) + proto(1) + imei(8) + checksum(2) + end(2)
+	case LocationMsg:
+		minLength = 26 // start(2) + len(1) + proto(1) + gps(18) + checksum(2) + end(2)
+	case StatusMsg:
+		minLength = 13 // start(2) + len(1) + proto(1) + status(4) + checksum(2) + end(2)
+	case AlarmMsg:
+		minLength = 27 // start(2) + len(1) + proto(1) + gps(18) + alarm(1) + checksum(2) + end(2)
 	default:
 		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
 
-	if actualContentLen < minContentLen {
-		return nil, fmt.Errorf("%w: protocol 0x%02x requires at least %d content bytes, got %d",
-			ErrInvalidLength, protocolNumber, minContentLen, actualContentLen)
+	if len(data) < minLength {
+		return nil, fmt.Errorf("%w: got %d bytes, need at least %d for protocol 0x%02x",
+			ErrPacketTooShort, len(data), minLength, protocolNumber)
 	}
 
-	// 8. Extract payload
-	payloadStart := 4 // After start(2) + length(1) + protocol(1)
-	payloadEnd := payloadStart + actualContentLen
-
-	// 9. Validate payload boundaries
-	if payloadEnd+4 > len(data) {
-		return nil, fmt.Errorf("%w: invalid payload boundaries",
-			ErrMalformedPacket)
+	// Validate declared length
+	declaredLen := int(data[2])
+	expectedLen := len(data) - 5 // subtract start(2), len(1), checksum(2)
+	if declaredLen != expectedLen {
+		return nil, fmt.Errorf("%w: declared=%d, actual=%d",
+			ErrInvalidLength, declaredLen, expectedLen)
 	}
 
-	payload := data[payloadStart:payloadEnd]
-	d.logDebug("Extracted payload: %d bytes", len(payload))
+	// Calculate checksum position and validate
+	checksumPos := len(data) - 4 // before end bytes
+	calcChecksum := calculateChecksum(data[2:checksumPos])
+	recvChecksum := uint16(data[checksumPos])<<8 | uint16(data[checksumPos+1])
 
-	// 10. Validate checksum
-	checksumData := data[2:payloadEnd]
-	calculatedChecksum := calculateChecksum(checksumData)
-	receivedChecksum := uint16(data[payloadEnd])<<8 | uint16(data[payloadEnd+1])
-
-	if calculatedChecksum != receivedChecksum {
+	if calcChecksum != recvChecksum {
 		return nil, fmt.Errorf("%w: calc=0x%04x, recv=0x%04x",
-			ErrInvalidChecksum, calculatedChecksum, receivedChecksum)
+			ErrInvalidChecksum, calcChecksum, recvChecksum)
 	}
 
-	// 11. Validate end bytes
-	if data[payloadEnd+2] != endByte1 || data[payloadEnd+3] != endByte2 {
+	// Validate end bytes
+	if data[len(data)-2] != EndByte1 || data[len(data)-1] != EndByte2 {
 		return nil, fmt.Errorf("%w: invalid end bytes", ErrMalformedPacket)
 	}
 
-	// 12. Process message based on protocol
+	// Extract content (after protocol byte, before checksum)
+	content := data[4:checksumPos]
+	d.logDebug("Content length: %d bytes", len(content))
+
+	// Process based on protocol
 	var result *GT06Data
 	var err error
 
 	switch protocolNumber {
-	case loginMsg:
-		result, err = d.decodeLoginMessage(payload)
-	case locationMsg:
-		result, err = d.decodeLocationMessage(payload)
-	case statusMsg:
-		result, err = d.decodeStatusMessage(payload)
-	case alarmMsg:
-		result, err = d.decodeAlarmMessage(payload)
+	case LoginMsg:
+		result, err = d.decodeLoginMessage(content)
+	case LocationMsg:
+		result, err = d.decodeLocationMessage(content)
+	case StatusMsg:
+		result, err = d.decodeStatusMessage(content)
+	case AlarmMsg:
+		result, err = d.decodeAlarmMessage(content)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode message: %w", err)
+		return nil, fmt.Errorf("failed to decode %s message: %w",
+			getMessageTypeName(protocolNumber), err)
 	}
 
-	d.logDebug("Successfully decoded %s message", getMessageTypeName(protocolNumber))
 	return result, nil
 }
 
-func getMessageTypeName(protocolNumber byte) string {
-	switch protocolNumber {
-	case loginMsg:
-		return "login"
-	case locationMsg:
-		return "location"
-	case statusMsg:
-		return "status"
-	case alarmMsg:
-		return "alarm"
-	default:
-		return fmt.Sprintf("unknown_0x%02x", protocolNumber)
-	}
-}
-
-func calculateChecksum(data []byte) uint16 {
-	var checksum uint16
-	for _, b := range data {
-		checksum ^= uint16(b)
-	}
-	return checksum
-}
-
 func (d *Decoder) decodeLocationMessage(data []byte) (*GT06Data, error) {
-	if len(data) < 12 {
-		return nil, fmt.Errorf("location message too short")
+	if len(data) < 10 {
+		return nil, fmt.Errorf("location message too short: got %d bytes, need 10", len(data))
 	}
 
 	result := &GT06Data{
@@ -220,69 +184,219 @@ func (d *Decoder) decodeLocationMessage(data []byte) (*GT06Data, error) {
 		Status: make(map[string]interface{}),
 	}
 
-	// Read GPS status byte
+	// Parse GPS status
 	statusByte := data[0]
 	result.GPSValid = (statusByte&0x01) == 0x01
-	result.Satellites = (statusByte >> 2) & 0x0F
+	result.Satellites = int((statusByte >> 2) & 0x0F)
 
-	d.logDebug("GPS Valid: %v, Satellites: %d", result.GPSValid, result.Satellites)
-
-	// Extract coordinates
-	rawLat := binary.BigEndian.Uint32(data[1:5])
-	rawLon := binary.BigEndian.Uint32(data[5:9])
-
+	// Parse coordinates
 	var err error
-	if result.Latitude, err = bcdToFloat(rawLat); err != nil {
-		return nil, fmt.Errorf("invalid latitude (0x%08x): %w", rawLat, err)
+	if result.Latitude, err = bcdToFloat(binary.BigEndian.Uint32(data[1:5])); err != nil {
+		return nil, fmt.Errorf("invalid latitude: %w", err)
 	}
-	if result.Longitude, err = bcdToFloat(rawLon); err != nil {
-		return nil, fmt.Errorf("invalid longitude (0x%08x): %w", rawLon, err)
+	if result.Longitude, err = bcdToFloat(binary.BigEndian.Uint32(data[5:9])); err != nil {
+		return nil, fmt.Errorf("invalid longitude: %w", err)
 	}
 
-	d.logDebug("Position: %.6f, %.6f", result.Latitude, result.Longitude)
-
-	// Extract speed and course
+	// Parse speed and course
 	result.Speed = float64(data[9])
-	result.Course = float64(binary.BigEndian.Uint16(data[10:12]))
-
-	d.logDebug("Speed: %.1f, Course: %.1f", result.Speed, result.Course)
+	if len(data) >= 11 {
+		result.Course = float64(binary.BigEndian.Uint16(data[10:12]))
+	}
 
 	// Parse timestamp if present
-	if len(data) >= 18 {
-		timeData := data[12:18]
-		if ts, err := d.parseTimestamp(bytes.NewReader(timeData)); err == nil {
+	if len(data) >= 16 {
+		if ts, err := d.parseTimestamp(bytes.NewReader(data[12:18])); err == nil {
 			result.Timestamp = ts
-			d.logDebug("Timestamp: %v", result.Timestamp)
-		} else {
-			d.logDebug("Failed to parse timestamp: %v", err)
 		}
 	}
 
 	return result, nil
 }
 
-type GT06Data struct {
-	Latitude    float64
-	Longitude   float64
-	Speed       float64
-	Course      float64
-	Timestamp   time.Time
-	Valid       bool
-	GPSValid    bool
-	Satellites  uint8
-	PowerLevel  uint8
-	GSMSignal   uint8
-	Alarm       string
-	Status      map[string]interface{}
+func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("%w: status message too short", ErrInvalidLength)
+	}
+
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
+	// First byte contains power and GSM signal levels
+	statusByte := data[0]
+	result.PowerLevel = int((statusByte >> 4) & 0x0F)
+	result.GSMSignal = int(statusByte & 0x0F)
+
+	// Validate power level (0-15)
+	if result.PowerLevel > 15 {
+		return nil, fmt.Errorf("%w: power level %d exceeds maximum of 15",
+			ErrMalformedPacket, result.PowerLevel)
+	}
+
+	// Add power and signal levels to status
+	result.Status["powerLevel"] = result.PowerLevel
+	result.Status["gsmSignal"] = result.GSMSignal
+
+	// Parse additional status flags if present
+	if len(data) > 1 {
+		result.Status["charging"] = (data[1]&0x20 != 0)
+		result.Status["engineOn"] = (data[1]&0x40 != 0)
+	}
+
+	return result, nil
+}
+
+func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
+	result := &GT06Data{
+		Valid:  true,
+		Status: make(map[string]interface{}),
+	}
+
+	if len(data) < 8 {
+		return nil, fmt.Errorf("login message too short")
+	}
+
+	// Extract IMEI from payload
+	result.Status["imei"] = fmt.Sprintf("%x", data[:8])
+
+	return result, nil
+}
+
+func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
+	// First decode location data
+	locationData, err := d.decodeLocationMessage(data[:len(data)-1])
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode location data in alarm message: %w", err)
+	}
+
+	// Extract alarm type from last byte
+	alarmType := data[len(data)-1]
+	d.logDebug("Processing alarm type: 0x%02x", alarmType)
+
+	switch alarmType {
+	case SosAlarm:
+		locationData.Alarm = "sos"
+	case PowerCutAlarm:
+		locationData.Alarm = "powerCut"
+	case VibrationAlarm:
+		locationData.Alarm = "vibration"
+	case FenceInAlarm:
+		locationData.Alarm = "geofenceEnter"
+	case FenceOutAlarm:
+		locationData.Alarm = "geofenceExit"
+	case LowBatteryAlarm:
+		locationData.Alarm = "lowBattery"
+	case OverspeedAlarm:
+		locationData.Alarm = "overspeed"
+	default:
+		// For unknown alarm types, use a consistent format
+		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
+	}
+
+	// Add alarm type to status map
+	if locationData.Status == nil {
+		locationData.Status = make(map[string]interface{})
+	}
+	locationData.Status["alarm"] = locationData.Alarm
+
+	return locationData, nil
+}
+
+func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
+	var timeBytes [6]byte
+	if _, err := reader.Read(timeBytes[:]); err != nil {
+		return time.Time{}, err
+	}
+
+	// Extract each component from BCD bytes
+	year := 2000 + ((int(timeBytes[0])>>4)*10 + int(timeBytes[0]&0x0F))
+	month := (int(timeBytes[1])>>4)*10 + int(timeBytes[1]&0x0F)
+	day := (int(timeBytes[2])>>4)*10 + int(timeBytes[2]&0x0F)
+	hour := (int(timeBytes[3])>>4)*10 + int(timeBytes[3]&0x0F)
+	minute := (int(timeBytes[4])>>4)*10 + int(timeBytes[4]&0x0F)
+	second := (int(timeBytes[5])>>4)*10 + int(timeBytes[5]&0x0F)
+
+	if month < 1 || month > 12 || day < 1 || day > 31 ||
+		hour > 23 || minute > 59 || second > 59 {
+		return time.Time{}, ErrInvalidTimestamp
+	}
+
+	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
+}
+
+func bcdToFloat(bcd uint32) (float64, error) {
+	degrees := float64(bcdToDec(byte(bcd>>24)))*10 +
+		float64(bcdToDec(byte((bcd>>16)&0xFF)))/60 +
+		float64(bcdToDec(byte((bcd>>8)&0xFF)))/3600
+	return degrees, nil
+}
+
+func bcdToDec(b byte) int {
+	return int(b>>4)*10 + int(b&0x0F)
+}
+
+func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
+	position := model.NewPosition(deviceID, data.Latitude, data.Longitude)
+	position.Speed = data.Speed
+	position.Course = data.Course
+	position.Valid = data.GPSValid
+	position.Timestamp = data.Timestamp
+	position.Protocol = "gt06"
+	position.Satellites = data.Satellites
+
+	position.Status = make(map[string]interface{})
+	if data.PowerLevel > 0 {
+		position.Status["powerLevel"] = data.PowerLevel
+	}
+	if data.GSMSignal > 0 {
+		position.Status["gsmSignal"] = data.GSMSignal
+	}
+	if data.Alarm != "" {
+		position.Status["alarm"] = data.Alarm
+	}
+
+	// Add remaining status fields
+	for k, v := range data.Status {
+		if _, exists := position.Status[k]; !exists {
+			position.Status[k] = v
+		}
+	}
+
+	return position
+}
+
+func getMessageTypeName(protocolNumber byte) string {
+	switch protocolNumber {
+	case LoginMsg:
+		return "login"
+	case LocationMsg:
+		return "location"
+	case StatusMsg:
+		return "status"
+	case AlarmMsg:
+		return "alarm"
+	default:
+		return fmt.Sprintf("unknown_0x%02x", protocolNumber)
+	}
+}
+
+func calculateChecksum(data []byte) uint16 {
+	var sum uint16
+	for _, b := range data {
+		sum ^= uint16(b)
+	}
+	return sum
 }
 
 func (d *Decoder) GenerateResponse(msgType uint8, deviceID string) []byte {
 	switch msgType {
-	case loginMsg:
+	case LoginMsg:
 		return d.generateLoginResponse(deviceID)
-	case locationMsg:
+	case LocationMsg:
 		return d.generateLocationResponse()
-	case alarmMsg:
+	case AlarmMsg:
 		return d.generateAlarmResponse()
 	default:
 		return d.generateLocationResponse() // Default to location response
@@ -296,13 +410,13 @@ func (d *Decoder) generateLoginResponse(deviceID string) []byte {
 	resp := make([]byte, 0, respLen+5)
 
 	// Start bytes
-	resp = append(resp, startByte1, startByte2)
+	resp = append(resp, StartByte1, StartByte2)
 
 	// Packet length
 	resp = append(resp, byte(respLen))
 
 	// Protocol number (login response)
-	resp = append(resp, loginResp)
+	resp = append(resp, LoginResp)
 
 	// Device ID (copy from request)
 	resp = append(resp, []byte(deviceID)...)
@@ -322,31 +436,31 @@ func (d *Decoder) generateLoginResponse(deviceID string) []byte {
 	resp = append(resp, byte(crc>>8), byte(crc))
 
 	// End bytes
-	resp = append(resp, endByte1, endByte2)
+	resp = append(resp, EndByte1, EndByte2)
 
 	return resp
 }
 
 func (d *Decoder) generateLocationResponse() []byte {
 	resp := []byte{
-		startByte1, startByte2, // Start bytes
+		StartByte1, StartByte2, // Start bytes
 		0x05,                   // Packet length
-		locationResp,           // Protocol number (location response)
+		LocationResp,           // Protocol number (location response)
 		0x00, 0x01,            // Serial number
 		0x00, 0x01,            // CRC
-		endByte1, endByte2,    // End bytes
+		EndByte1, EndByte2,    // End bytes
 	}
 	return resp
 }
 
 func (d *Decoder) generateAlarmResponse() []byte {
 	resp := []byte{
-		startByte1, startByte2, // Start bytes
+		StartByte1, StartByte2, // Start bytes
 		0x05,                   // Packet length
-		alarmResp,              // Protocol number (alarm response)
+		AlarmResp,              // Protocol number (alarm response)
 		0x00, 0x01,            // Serial number
 		0x00, 0x01,            // CRC
-		endByte1, endByte2,    // End bytes
+		EndByte1, EndByte2,    // End bytes
 	}
 	return resp
 }
@@ -359,207 +473,17 @@ func calculateCRC(data []byte) uint16 {
 	return crc
 }
 
-func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
-	// First decode location data
-	locationData, err := d.decodeLocationMessage(data[:len(data)-1])
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode location data in alarm message: %w", err)
-	}
-
-	// Extract alarm type from last byte
-	alarmType := data[len(data)-1]
-	d.logDebug("Processing alarm type: 0x%02x", alarmType)
-
-	switch alarmType {
-	case sosAlarm:
-		locationData.Alarm = "sos"
-	case powerCutAlarm:
-		locationData.Alarm = "powerCut"
-	case vibrationAlarm:
-		locationData.Alarm = "vibration"
-	case fenceInAlarm:
-		locationData.Alarm = "geofenceEnter"
-	case fenceOutAlarm:
-		locationData.Alarm = "geofenceExit"
-	case lowBatteryAlarm:
-		locationData.Alarm = "lowBattery"
-	case overspeedAlarm:
-		locationData.Alarm = "overspeed"
-	default:
-		// For unknown alarm types, use a consistent format
-		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
-		d.logDebug("Unknown alarm type 0x%02x, using %s",
-			alarmType, locationData.Alarm)
-	}
-
-	// Add alarm type to status map
-	if locationData.Status == nil {
-		locationData.Status = make(map[string]interface{})
-	}
-	locationData.Status["alarm"] = locationData.Alarm
-
-	d.logDebug("Alarm message decoded: type=%s", locationData.Alarm)
-	return locationData, nil
+type GT06Data struct {
+	Latitude    float64
+	Longitude   float64
+	Speed       float64
+	Course      float64
+	Timestamp   time.Time
+	Valid       bool
+	GPSValid    bool
+	Satellites  int
+	PowerLevel  int
+	GSMSignal   int
+	Alarm       string
+	Status      map[string]interface{}
 }
-
-func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
-	if len(data) < 4 {
-		return nil, fmt.Errorf("%w: status message too short", ErrInvalidLength)
-	}
-
-	result := &GT06Data{
-		Valid:  true,
-		Status: make(map[string]interface{}),
-	}
-
-	// First byte contains power and GSM signal levels
-	statusByte := data[0]
-	result.PowerLevel = (statusByte >> 4) & 0x0F
-	result.GSMSignal = statusByte & 0x0F
-
-	// Validate power level (0-15)
-	if result.PowerLevel > 15 {
-		return nil, fmt.Errorf("%w: power level %d exceeds maximum of 15",
-			ErrMalformedPacket, result.PowerLevel)
-	}
-
-	// Add power and signal levels to status
-	result.Status["powerLevel"] = result.PowerLevel
-	result.Status["gsmSignal"] = result.GSMSignal
-
-	// Parse additional status flags if present
-	if len(data) > 1 {
-		result.Status["charging"] = (data[1]&0x20 != 0)
-		result.Status["engineOn"] = (data[1]&0x40 != 0)
-
-		d.logDebug("Status flags: charging=%v, engineOn=%v",
-			result.Status["charging"], result.Status["engineOn"])
-	}
-
-	d.logDebug("Status: power=%d/15, gsm=%d/15",
-		result.PowerLevel, result.GSMSignal)
-
-	return result, nil
-}
-
-func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
-	var timeBytes [6]byte
-	if _, err := reader.Read(timeBytes[:]); err != nil {
-		return time.Time{}, err
-	}
-
-	// Extract each component from BCD bytes
-	// Year is stored as two BCD digits (e.g., 23 for 2023)
-	year := 2000 + ((int(timeBytes[0])>>4)*10 + int(timeBytes[0]&0x0F))
-
-	// Month is stored as two BCD digits (01-12)
-	month := (int(timeBytes[1])>>4)*10 + int(timeBytes[1]&0x0F)
-
-	// Day is stored as two BCD digits (01-31)
-	day := (int(timeBytes[2])>>4)*10 + int(timeBytes[2]&0x0F)
-
-	// Hours is stored as two BCD digits (00-23)
-	hour := (int(timeBytes[3])>>4)*10 + int(timeBytes[3]&0x0F)
-
-	// Minutes is stored as two BCD digits (00-59)
-	minute := (int(timeBytes[4])>>4)*10 + int(timeBytes[4]&0x0F)
-
-	// Seconds is stored as two BCD digits (00-59)
-	second := (int(timeBytes[5])>>4)*10 + int(timeBytes[5]&0x0F)
-
-	// Validate ranges
-	if month < 1 || month > 12 || day < 1 || day > 31 ||
-		hour > 23 || minute > 59 || second > 59 {
-		return time.Time{}, ErrInvalidTimestamp
-	}
-
-	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
-}
-
-func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
-	result := &GT06Data{
-		Valid:  true,
-		Status: make(map[string]interface{}),
-	}
-
-	if len(data) < 8 {
-		return nil, fmt.Errorf("login message too short")
-	}
-
-	// Extract IMEI from payload
-	result.Status["imei"] = fmt.Sprintf("%x", data[:8])
-
-	return result, nil
-}
-
-func bcdToFloat(bcd uint32) (float64, error) {
-	// Extract BCD digits
-	d1 := (bcd >> 28) & 0x0F
-	d2 := (bcd >> 24) & 0x0F
-	d3 := (bcd >> 20) & 0x0F
-	d4 := (bcd >> 16) & 0x0F
-	d5 := (bcd >> 12) & 0x0F
-	d6 := (bcd >> 8) & 0x0F
-	d7 := (bcd >> 4) & 0x0F
-	d8 := bcd & 0x0F
-
-	// Validate each BCD digit
-	for i, digit := range []uint32{d1, d2, d3, d4, d5, d6, d7, d8} {
-		if digit > 9 {
-			return 0, fmt.Errorf("%w: invalid BCD digit %d at position %d",
-				ErrInvalidCoordinate, digit, i+1)
-		}
-	}
-
-	// Convert to degrees and minutes
-	degrees := float64(d1*10 + d2)
-	minutes := float64(d3*10) + float64(d4) +
-		float64(d5)/10.0 + float64(d6)/100.0 +
-		float64(d7)/1000.0 + float64(d8)/10000.0
-
-	// Validate ranges
-	if degrees > 90 || minutes >= 60 {
-		return 0, fmt.Errorf("%w: invalid values (deg=%.0f, min=%.4f)",
-			ErrInvalidCoordinate, degrees, minutes)
-	}
-
-	return degrees + (minutes / 60.0), nil
-}
-
-func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
-	position := model.NewPosition(deviceID, data.Latitude, data.Longitude)
-	position.Speed = data.Speed
-	position.Course = data.Course
-	position.Valid = data.GPSValid
-	position.Timestamp = data.Timestamp
-	position.Protocol = "gt06"
-	position.Satellites = data.Satellites
-
-	// Add additional status information
-	if data.Alarm != "" {
-		position.Status = map[string]interface{}{
-			"alarm":      data.Alarm,
-			"powerLevel": data.PowerLevel,
-			"gsmSignal":  data.GSMSignal,
-		}
-		// Add all status fields
-		for k, v := range data.Status {
-			position.Status[k] = v
-		}
-	}
-
-	return position
-}
-
-var (
-	loginResp    = byte(0x01)
-	locationResp = byte(0x12)
-	alarmResp    = byte(0x16)
-	sosAlarm     = byte(0x01)
-	powerCutAlarm = byte(0x02)
-	vibrationAlarm = byte(0x03)
-	fenceInAlarm  = byte(0x04)
-	fenceOutAlarm = byte(0x05)
-	lowBatteryAlarm = byte(0x06)
-	overspeedAlarm = byte(0x07)
-)
