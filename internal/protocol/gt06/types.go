@@ -10,13 +10,13 @@ import (
 
 // GT06Data represents the decoded data from a GT06 protocol packet
 type GT06Data struct {
+	Valid       bool
+	GPSValid    bool
 	Latitude    float64
 	Longitude   float64
 	Speed       float64
 	Course      float64
 	Timestamp   time.Time
-	Valid       bool
-	GPSValid    bool
 	Satellites  int
 	PowerLevel  int
 	GSMSignal   int
@@ -79,7 +79,7 @@ type PacketHeader struct {
 	TotalSize int
 }
 
-// Utility functions
+// Shared utility functions
 
 // ParseTimestamp parses BCD encoded timestamp from GT06 data
 func ParseTimestamp(reader *bytes.Reader) (time.Time, error) {
@@ -161,15 +161,6 @@ func CalculateChecksum(data []byte) uint16 {
 		sum ^= uint16(b)
 	}
 	return sum
-}
-
-// CalculateCRC calculates the CRC for GT06 packets
-func CalculateCRC(data []byte) uint16 {
-	var crc uint16
-	for _, b := range data {
-		crc ^= uint16(b)
-	}
-	return crc
 }
 
 // ValidateCoordinates checks if coordinates are within valid ranges
