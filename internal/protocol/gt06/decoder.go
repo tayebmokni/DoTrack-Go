@@ -50,7 +50,7 @@ func (d *Decoder) logPacket(data []byte, prefix string) {
 	d.logDebug("%s Packet [%d bytes]:\n        %s", prefix, len(data), hexStr)
 }
 
-func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
+func (d *Decoder) Decode(data []byte) (*model.GT06Data, error) { // Changed to use model.GT06Data
 	d.logDebug("Starting packet decode...")
 	d.logPacket(data, "Received")
 
@@ -93,7 +93,7 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 			ErrInvalidLength, declaredLen, expectedLen)
 	}
 
-	checksumPos := len(data) - 4 
+	checksumPos := len(data) - 4
 	calcChecksum := CalculateChecksum(data[2:checksumPos])
 	recvChecksum := uint16(data[checksumPos])<<8 | uint16(data[checksumPos+1])
 
@@ -109,7 +109,7 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	content := data[4:checksumPos]
 	d.logDebug("Content length: %d bytes", len(content))
 
-	var result *GT06Data
+	var result *model.GT06Data // Changed to use model.GT06Data
 	var err error
 
 	switch protocolNumber {
@@ -131,12 +131,12 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	return result, nil
 }
 
-func (d *Decoder) decodeLocationMessage(data []byte) (*GT06Data, error) {
+func (d *Decoder) decodeLocationMessage(data []byte) (*model.GT06Data, error) { // Changed to use model.GT06Data
 	if len(data) < 10 {
 		return nil, fmt.Errorf("location message too short: got %d bytes, need 10", len(data))
 	}
 
-	result := &GT06Data{
+	result := &model.GT06Data{ // Changed to use model.GT06Data
 		Valid:  true,
 		Status: make(map[string]interface{}),
 	}
@@ -171,12 +171,12 @@ func (d *Decoder) decodeLocationMessage(data []byte) (*GT06Data, error) {
 	return result, nil
 }
 
-func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
+func (d *Decoder) decodeStatusMessage(data []byte) (*model.GT06Data, error) { // Changed to use model.GT06Data
 	if len(data) < 4 {
 		return nil, fmt.Errorf("%w: status message too short", ErrInvalidLength)
 	}
 
-	result := &GT06Data{
+	result := &model.GT06Data{ // Changed to use model.GT06Data
 		Valid:  true,
 		Status: make(map[string]interface{}),
 	}
@@ -201,12 +201,12 @@ func (d *Decoder) decodeStatusMessage(data []byte) (*GT06Data, error) {
 	return result, nil
 }
 
-func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
+func (d *Decoder) decodeLoginMessage(data []byte) (*model.GT06Data, error) { // Changed to use model.GT06Data
 	if len(data) < 8 {
 		return nil, fmt.Errorf("login message too short")
 	}
 
-	result := &GT06Data{
+	result := &model.GT06Data{ // Changed to use model.GT06Data
 		Valid:  true,
 		Status: make(map[string]interface{}),
 	}
@@ -215,7 +215,7 @@ func (d *Decoder) decodeLoginMessage(data []byte) (*GT06Data, error) {
 	return result, nil
 }
 
-func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
+func (d *Decoder) decodeAlarmMessage(data []byte) (*model.GT06Data, error) { // Changed to use model.GT06Data
 	locationData, err := d.decodeLocationMessage(data[:len(data)-1])
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode location part: %w", err)
@@ -228,7 +228,7 @@ func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 	return locationData, nil
 }
 
-func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
+func (d *Decoder) ToPosition(deviceID string, data *model.GT06Data) *model.Position { // Changed to use model.GT06Data and model.Position
 	position := model.NewPosition(deviceID, data.Latitude, data.Longitude)
 	position.Speed = data.Speed
 	position.Course = data.Course
@@ -399,20 +399,6 @@ func GetAlarmName(alarmType byte) string {
 	}
 }
 
-type GT06Data struct {
-	Latitude    float64
-	Longitude   float64
-	Speed       float64
-	Course      float64
-	Timestamp   time.Time
-	Valid       bool
-	GPSValid    bool
-	Satellites  int
-	PowerLevel  int
-	GSMSignal   int
-	Alarm       string
-	Status      map[string]interface{}
-}
 
 // Common GT06 errors
 var (
