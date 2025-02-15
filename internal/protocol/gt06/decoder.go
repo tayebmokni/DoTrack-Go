@@ -50,6 +50,12 @@ const (
 	LoginResp    = 0x01
 	LocationResp = 0x12
 	AlarmResp    = 0x16
+
+	MinPacketLength    = 7
+	MinLoginLength     = 15
+	MinLocationLength  = 26
+	MinStatusLength    = 13
+	MinAlarmLength     = 27
 )
 
 // Decoder implements the GT06 protocol decoder
@@ -90,8 +96,8 @@ func (d *Decoder) logPacket(data []byte, prefix string) {
 func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode...")
 
-	if len(data) < 7 {
-		return nil, fmt.Errorf("%w: packet requires at least 7 bytes", ErrPacketTooShort)
+	if len(data) < MinPacketLength {
+		return nil, fmt.Errorf("%w: packet requires at least %d bytes", ErrPacketTooShort, MinPacketLength)
 	}
 
 	// Validate start bytes
@@ -108,13 +114,13 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 	var minLength int
 	switch protocolNumber {
 	case LoginMsg:
-		minLength = 15 // start(2) + len(1) + proto(1) + imei(8) + checksum(2) + end(2)
+		minLength = MinLoginLength
 	case LocationMsg:
-		minLength = 26 // start(2) + len(1) + proto(1) + gps(18) + checksum(2) + end(2)
+		minLength = MinLocationLength
 	case StatusMsg:
-		minLength = 13 // start(2) + len(1) + proto(1) + status(4) + checksum(2) + end(2)
+		minLength = MinStatusLength
 	case AlarmMsg:
-		minLength = 27 // start(2) + len(1) + proto(1) + gps(18) + alarm(1) + checksum(2) + end(2)
+		minLength = MinAlarmLength
 	default:
 		return nil, fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, protocolNumber)
 	}
@@ -134,7 +140,7 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 
 	// Calculate checksum position and validate
 	checksumPos := len(data) - 4 // before end bytes
-	calcChecksum := calculateChecksum(data[2:checksumPos])
+	calcChecksum := CalculateChecksum(data[2:checksumPos])
 	recvChecksum := uint16(data[checksumPos])<<8 | uint16(data[checksumPos+1])
 
 	if calcChecksum != recvChecksum {
@@ -168,7 +174,7 @@ func (d *Decoder) Decode(data []byte) (*GT06Data, error) {
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode %s message: %w",
-			getMessageTypeName(protocolNumber), err)
+			GetMessageTypeName(protocolNumber), err)
 	}
 
 	return result, nil
@@ -191,22 +197,24 @@ func (d *Decoder) decodeLocationMessage(data []byte) (*GT06Data, error) {
 
 	// Parse coordinates
 	var err error
-	if result.Latitude, err = bcdToFloat(binary.BigEndian.Uint32(data[1:5])); err != nil {
+	if result.Latitude, err = BcdToFloat(uint32(data[1])<<24 | uint32(data[2])<<16 | uint32(data[3])<<8 | uint32(data[4])); err != nil {
 		return nil, fmt.Errorf("invalid latitude: %w", err)
 	}
-	if result.Longitude, err = bcdToFloat(binary.BigEndian.Uint32(data[5:9])); err != nil {
+	if result.Longitude, err = BcdToFloat(uint32(data[5])<<24 | uint32(data[6])<<16 | uint32(data[7])<<8 | uint32(data[8])); err != nil {
 		return nil, fmt.Errorf("invalid longitude: %w", err)
 	}
 
-	// Parse speed and course
-	result.Speed = float64(data[9])
-	if len(data) >= 11 {
-		result.Course = float64(binary.BigEndian.Uint16(data[10:12]))
+	if err := ValidateCoordinates(result.Latitude, result.Longitude); err != nil {
+		return nil, err
 	}
 
-	// Parse timestamp if present
+	result.Speed = float64(data[9])
+	if len(data) >= 11 {
+		result.Course = float64(uint16(data[10])<<8 | uint16(data[11]))
+	}
+
 	if len(data) >= 16 {
-		if ts, err := d.parseTimestamp(bytes.NewReader(data[12:18])); err == nil {
+		if ts, err := ParseTimestamp(bytes.NewReader(data[12:18])); err == nil {
 			result.Timestamp = ts
 		}
 	}
@@ -275,66 +283,10 @@ func (d *Decoder) decodeAlarmMessage(data []byte) (*GT06Data, error) {
 	alarmType := data[len(data)-1]
 	d.logDebug("Processing alarm type: 0x%02x", alarmType)
 
-	switch alarmType {
-	case SosAlarm:
-		locationData.Alarm = "sos"
-	case PowerCutAlarm:
-		locationData.Alarm = "powerCut"
-	case VibrationAlarm:
-		locationData.Alarm = "vibration"
-	case FenceInAlarm:
-		locationData.Alarm = "geofenceEnter"
-	case FenceOutAlarm:
-		locationData.Alarm = "geofenceExit"
-	case LowBatteryAlarm:
-		locationData.Alarm = "lowBattery"
-	case OverspeedAlarm:
-		locationData.Alarm = "overspeed"
-	default:
-		// For unknown alarm types, use a consistent format
-		locationData.Alarm = fmt.Sprintf("unknown_%02x", alarmType)
-	}
-
-	// Add alarm type to status map
-	if locationData.Status == nil {
-		locationData.Status = make(map[string]interface{})
-	}
+	locationData.Alarm = GetAlarmName(alarmType)
 	locationData.Status["alarm"] = locationData.Alarm
 
 	return locationData, nil
-}
-
-func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
-	var timeBytes [6]byte
-	if _, err := reader.Read(timeBytes[:]); err != nil {
-		return time.Time{}, err
-	}
-
-	// Extract each component from BCD bytes
-	year := 2000 + ((int(timeBytes[0])>>4)*10 + int(timeBytes[0]&0x0F))
-	month := (int(timeBytes[1])>>4)*10 + int(timeBytes[1]&0x0F)
-	day := (int(timeBytes[2])>>4)*10 + int(timeBytes[2]&0x0F)
-	hour := (int(timeBytes[3])>>4)*10 + int(timeBytes[3]&0x0F)
-	minute := (int(timeBytes[4])>>4)*10 + int(timeBytes[4]&0x0F)
-	second := (int(timeBytes[5])>>4)*10 + int(timeBytes[5]&0x0F)
-
-	if month < 1 || month > 12 || day < 1 || day > 31 ||
-		hour > 23 || minute > 59 || second > 59 {
-		return time.Time{}, ErrInvalidTimestamp
-	}
-
-	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
-}
-
-func bcdToFloat(bcd uint32) (float64, error) {
-	degrees := float64(bcdToDec(byte(bcd>>24)))*10 +
-		float64(bcdToDec(byte((bcd>>16)&0xFF)))/60 +
-		float64(bcdToDec(byte((bcd>>8)&0xFF)))/3600
-	return degrees, nil
-}
-
-func bcdToDec(b byte) int {
-	return int(b>>4)*10 + int(b&0x0F)
 }
 
 func (d *Decoder) ToPosition(deviceID string, data *GT06Data) *model.Position {
@@ -383,6 +335,14 @@ func getMessageTypeName(protocolNumber byte) string {
 }
 
 func calculateChecksum(data []byte) uint16 {
+	var sum uint16
+	for _, b := range data {
+		sum ^= uint16(b)
+	}
+	return sum
+}
+
+func CalculateChecksum(data []byte) uint16 {
 	var sum uint16
 	for _, b := range data {
 		sum ^= uint16(b)
@@ -471,6 +431,98 @@ func calculateCRC(data []byte) uint16 {
 		crc ^= uint16(b)
 	}
 	return crc
+}
+
+func bcdToFloat(bcd uint32) (float64, error) {
+	degrees := float64(bcdToDec(byte(bcd>>24)))*10 +
+		float64(bcdToDec(byte((bcd>>16)&0xFF)))/60 +
+		float64(bcdToDec(byte((bcd>>8)&0xFF)))/3600
+	return degrees, nil
+}
+
+func BcdToFloat(bcd uint32) (float64, error) {
+	degrees := float64(bcdToDec(byte(bcd>>24)))*10 +
+		float64(bcdToDec(byte((bcd>>16)&0xFF)))/60 +
+		float64(bcdToDec(byte((bcd>>8)&0xFF)))/3600
+	return degrees, nil
+
+}
+
+func bcdToDec(b byte) int {
+	return int(b>>4)*10 + int(b&0x0F)
+}
+
+func (d *Decoder) parseTimestamp(reader *bytes.Reader) (time.Time, error) {
+	var timeBytes [6]byte
+	if _, err := reader.Read(timeBytes[:]); err != nil {
+		return time.Time{}, err
+	}
+
+	// Extract each component from BCD bytes
+	year := 2000 + ((int(timeBytes[0])>>4)*10 + int(timeBytes[0]&0x0F))
+	month := (int(timeBytes[1])>>4)*10 + int(timeBytes[1]&0x0F)
+	day := (int(timeBytes[2])>>4)*10 + int(timeBytes[2]&0x0F)
+	hour := (int(timeBytes[3])>>4)*10 + int(timeBytes[3]&0x0F)
+	minute := (int(timeBytes[4])>>4)*10 + int(timeBytes[4]&0x0F)
+	second := (int(timeBytes[5])>>4)*10 + int(timeBytes[5]&0x0F)
+
+	if month < 1 || month > 12 || day < 1 || day > 31 ||
+		hour > 23 || minute > 59 || second > 59 {
+		return time.Time{}, ErrInvalidTimestamp
+	}
+
+	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
+}
+
+func ParseTimestamp(reader *bytes.Reader) (time.Time, error) {
+	var timeBytes [6]byte
+	if _, err := reader.Read(timeBytes[:]); err != nil {
+		return time.Time{}, err
+	}
+
+	// Extract each component from BCD bytes
+	year := 2000 + ((int(timeBytes[0])>>4)*10 + int(timeBytes[0]&0x0F))
+	month := (int(timeBytes[1])>>4)*10 + int(timeBytes[1]&0x0F)
+	day := (int(timeBytes[2])>>4)*10 + int(timeBytes[2]&0x0F)
+	hour := (int(timeBytes[3])>>4)*10 + int(timeBytes[3]&0x0F)
+	minute := (int(timeBytes[4])>>4)*10 + int(timeBytes[4]&0x0F)
+	second := (int(timeBytes[5])>>4)*10 + int(timeBytes[5]&0x0F)
+
+	if month < 1 || month > 12 || day < 1 || day > 31 ||
+		hour > 23 || minute > 59 || second > 59 {
+		return time.Time{}, ErrInvalidTimestamp
+	}
+
+	return time.Date(year, time.Month(month), day, hour, minute, second, 0, time.UTC), nil
+}
+
+
+func ValidateCoordinates(latitude, longitude float64) error {
+	if latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180 {
+		return ErrInvalidCoordinate
+	}
+	return nil
+}
+
+func GetAlarmName(alarmType byte) string {
+	switch alarmType {
+	case SosAlarm:
+		return "sos"
+	case PowerCutAlarm:
+		return "powerCut"
+	case VibrationAlarm:
+		return "vibration"
+	case FenceInAlarm:
+		return "geofenceEnter"
+	case FenceOutAlarm:
+		return "geofenceExit"
+	case LowBatteryAlarm:
+		return "lowBattery"
+	case OverspeedAlarm:
+		return "overspeed"
+	default:
+		return fmt.Sprintf("unknown_%02x", alarmType)
+	}
 }
 
 type GT06Data struct {
