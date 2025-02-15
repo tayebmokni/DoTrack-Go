@@ -43,25 +43,19 @@ func (d *DecoderV2) logPacket(data []byte, prefix string) {
 	d.logDebug("%s Packet [%d bytes]:\n        %s", prefix, len(data), hexStr)
 }
 
-type packetHeader struct {
-	length    byte
-	protocol  byte
-	totalSize int
-}
-
-func (d *DecoderV2) validatePacket(header *packetHeader, data []byte) error {
+func (d *DecoderV2) validatePacket(header *PacketHeader, data []byte) error {
 	var minLength int
-	switch header.protocol {
+	switch header.Protocol {
 	case LoginMsg:
-		minLength = 15
+		minLength = MinLoginLength
 	case LocationMsg:
-		minLength = 26
+		minLength = MinLocationLength
 	case StatusMsg:
-		minLength = 13
+		minLength = MinStatusLength
 	case AlarmMsg:
-		minLength = 27
+		minLength = MinAlarmLength
 	default:
-		return fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, header.protocol)
+		return fmt.Errorf("%w: 0x%02x", ErrInvalidMessageType, header.Protocol)
 	}
 
 	if len(data) < minLength {
@@ -88,8 +82,9 @@ func (d *DecoderV2) validatePacket(header *packetHeader, data []byte) error {
 func (d *DecoderV2) Decode(data []byte) (*GT06Data, error) {
 	d.logDebug("Starting packet decode (v2)...")
 
-	if len(data) < 4 {
-		return nil, fmt.Errorf("%w: need at least 4 bytes", ErrPacketTooShort)
+	if len(data) < MinPacketLength {
+		return nil, fmt.Errorf("%w: need at least %d bytes",
+			ErrPacketTooShort, MinPacketLength)
 	}
 
 	if data[0] != StartByte1 || data[1] != StartByte2 {
@@ -97,10 +92,10 @@ func (d *DecoderV2) Decode(data []byte) (*GT06Data, error) {
 			ErrInvalidHeader, StartByte1, StartByte2, data[0], data[1])
 	}
 
-	header := &packetHeader{
-		length:    data[2],
-		protocol:  data[3],
-		totalSize: 2 + 1 + int(data[2]) + 2 + 2, // start(2) + len(1) + content(length) + checksum(2) + end(2)
+	header := &PacketHeader{
+		Length:    data[2],
+		Protocol:  data[3],
+		TotalSize: 2 + 1 + int(data[2]) + 2 + 2, // start(2) + len(1) + content(length) + checksum(2) + end(2)
 	}
 
 	if err := d.validatePacket(header, data); err != nil {
@@ -111,12 +106,13 @@ func (d *DecoderV2) Decode(data []byte) (*GT06Data, error) {
 	payloadEnd := len(data) - 4
 	payload := data[payloadStart:payloadEnd]
 
-	d.logDebug("Processing payload: %d bytes, protocol=0x%02x", len(payload), header.protocol)
+	d.logDebug("Processing payload: %d bytes, protocol=0x%02x",
+		len(payload), header.Protocol)
 
 	var result *GT06Data
 	var err error
 
-	switch header.protocol {
+	switch header.Protocol {
 	case LoginMsg:
 		result, err = d.decodeLoginMessage(payload)
 	case LocationMsg:
@@ -126,12 +122,12 @@ func (d *DecoderV2) Decode(data []byte) (*GT06Data, error) {
 	case AlarmMsg:
 		result, err = d.decodeAlarmMessage(payload)
 	default:
-		return nil, fmt.Errorf("unsupported protocol: 0x%02x", header.protocol)
+		return nil, fmt.Errorf("unsupported protocol: 0x%02x", header.Protocol)
 	}
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode %s message: %w",
-			GetMessageTypeName(header.protocol), err)
+			GetMessageTypeName(header.Protocol), err)
 	}
 
 	return result, nil
@@ -157,6 +153,10 @@ func (d *DecoderV2) decodeLocationMessage(data []byte) (*GT06Data, error) {
 	}
 	if result.Longitude, err = BcdToFloat(uint32(data[5])<<24 | uint32(data[6])<<16 | uint32(data[7])<<8 | uint32(data[8])); err != nil {
 		return nil, fmt.Errorf("invalid longitude: %w", err)
+	}
+
+	if err := ValidateCoordinates(result.Latitude, result.Longitude); err != nil {
+		return nil, err
 	}
 
 	result.Speed = float64(data[9])
@@ -344,9 +344,14 @@ const (
 	PowerCutAlarm  = 0x02
 	VibrationAlarm = 0x04
 	FenceInAlarm   = 0x08
-	FenceOutAlarm  = 0x10
+	FenceOutAlarm   = 0x10
 	LowBatteryAlarm = 0x20
 	OverspeedAlarm  = 0x40
+	MinPacketLength = 4
+	MinLoginLength  = 15
+	MinLocationLength = 26
+	MinStatusLength  = 13
+	MinAlarmLength   = 27
 )
 
 var ErrInvalidHeader = fmt.Errorf("invalid packet header")
@@ -374,4 +379,18 @@ func BcdToFloat(bcd uint32) (float64, error) {
 
 func BcdToDec(b byte) int {
 	return int(b>>4)*10 + int(b&0x0F)
+}
+
+func ValidateCoordinates(latitude, longitude float64) error {
+	// Add your coordinate validation logic here.  This is a placeholder.
+	if latitude > 90 || latitude < -90 || longitude > 180 || longitude < -180 {
+		return fmt.Errorf("invalid coordinates: latitude=%f, longitude=%f", latitude, longitude)
+	}
+	return nil
+}
+
+type PacketHeader struct {
+	Length    byte
+	Protocol  byte
+	TotalSize int
 }

@@ -51,6 +51,13 @@ const (
 	LoginResp    = 0x01
 	LocationResp = 0x12
 	AlarmResp    = 0x16
+
+	// Minimum packet sizes
+	MinPacketLength    = 15  // Minimum length for any valid packet
+	MinLoginLength     = 15  // start(2) + len(1) + proto(1) + imei(8) + checksum(2) + end(2)
+	MinLocationLength  = 26  // start(2) + len(1) + proto(1) + gps(18) + checksum(2) + end(2)
+	MinStatusLength    = 13  // start(2) + len(1) + proto(1) + status(4) + checksum(2) + end(2)
+	MinAlarmLength     = 27  // start(2) + len(1) + proto(1) + gps(18) + alarm(1) + checksum(2) + end(2)
 )
 
 // Common errors
@@ -65,7 +72,14 @@ var (
 	ErrMalformedPacket    = errors.New("malformed packet structure")
 )
 
-// Utility functions shared between decoders
+// PacketHeader represents the common header structure for GT06 packets
+type PacketHeader struct {
+	Length    byte
+	Protocol  byte
+	TotalSize int
+}
+
+// Utility functions
 
 // ParseTimestamp parses BCD encoded timestamp from GT06 data
 func ParseTimestamp(reader *bytes.Reader) (time.Time, error) {
@@ -156,4 +170,13 @@ func CalculateCRC(data []byte) uint16 {
 		crc ^= uint16(b)
 	}
 	return crc
+}
+
+// ValidateCoordinates checks if coordinates are within valid ranges
+func ValidateCoordinates(lat, lon float64) error {
+	if lat < -90 || lat > 90 || lon < -180 || lon > 180 {
+		return fmt.Errorf("%w: lat=%.6f, lon=%.6f",
+			ErrInvalidCoordinate, lat, lon)
+	}
+	return nil
 }
